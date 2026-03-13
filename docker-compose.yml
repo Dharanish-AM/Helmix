@@ -222,6 +222,8 @@ services:
       NATS_URL: nats://nats:4222
       OBSERVABILITY_SERVICE_URL: http://observability:8086
       DEPLOYMENT_ENGINE_SERVICE_URL: http://deployment-engine:8085
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: helmix-incidents
       HELMIX_LLM_PROVIDER: mock
       INCIDENT_AI_AUDIT_LOG_PATH: /tmp/incident-ai-audit.log
     depends_on:

@@ -13,6 +13,7 @@ from .classifier import classify_stack
 from .config import Settings, load_settings
 from .context_clients import ContextClients
 from .llm.provider import get_provider
+from .memory_store import QdrantIncidentMemoryStore
 from .models import AlertEvent, ClassificationRequest, ClassificationResponse, IncidentListResponse, IncidentSummary, ManualActionRequest, ManualActionResponse
 from .repository import IncidentRepository
 from .service import IncidentService
@@ -37,6 +38,8 @@ def create_app() -> FastAPI:
         await nats_client.connect(settings.nats_url)
 
         repository = IncidentRepository(pool)
+        memory_store = QdrantIncidentMemoryStore(settings.qdrant_url, settings.qdrant_collection)
+        await memory_store.ensure_collection()
         service = IncidentService(
             repository=repository,
             provider=get_provider(settings.llm_provider),
@@ -44,6 +47,7 @@ def create_app() -> FastAPI:
             publisher=NATSPublisher(nats_client),
             deployment_engine_url=settings.deployment_engine_url,
             audit_log_path=settings.audit_log_path,
+            memory_store=memory_store,
         )
 
         async def on_alert(message):

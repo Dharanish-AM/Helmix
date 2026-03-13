@@ -40,6 +40,9 @@ class FakeRepository:
         return None
 
     async def append_action(self, incident_id, entry):
+        for incident in self.incidents:
+            if incident["id"] == incident_id:
+                incident.setdefault("ai_actions", []).append(entry)
         return await self.get_incident(incident_id)
 
 
@@ -74,6 +77,23 @@ class FakePublisher:
 
     async def publish(self, subject, payload):
         self.subjects.append((subject, payload))
+
+
+class FakeMemoryStore:
+    def __init__(self, search_results=None) -> None:
+        self.search_results = list(search_results or [])
+        self.search_calls = []
+        self.upserts = []
+
+    async def ensure_collection(self):
+        return None
+
+    async def search_similar(self, project_id, query_text, limit=3, exclude_incident_id=None):
+        self.search_calls.append((project_id, query_text, limit, exclude_incident_id))
+        return list(self.search_results)
+
+    async def upsert_incident_memory(self, incident_id, project_id, alert_id, summary, actions_taken):
+        self.upserts.append((incident_id, project_id, alert_id, summary, actions_taken))
 
 
 class CapturingProvider(LLMProvider):
@@ -291,11 +311,59 @@ async def test_low_confidence_no_autoexecute():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_qdrant_similar_included():
-    class SimilarClients(ContextClients):
-        async def fetch_similar_incidents(self, client, project_id):
-            return [{"incident_id": "old-1", "summary": "Previous restart fixed the issue."}]
+async def test_auto_execute_runs_actions_and_publishes_autoheal():
+    respx.get("http://observability:8086/metrics/project-1").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("http://deployment-engine:8085/deployments").mock(return_value=httpx.Response(200, json=[]))
 
+    provider = CapturingProvider([
+        json.dumps(
+            {
+                "root_cause": "Pods are not ready.",
+                "confidence": 0.92,
+                "reasoning": "Ready pod count dropped to zero.",
+                "recommended_actions": [{"action": "restart_pods", "params": {}}],
+                "auto_execute": True,
+            }
+        )
+    ])
+    publisher = FakePublisher()
+    repository = FakeRepository()
+    service = IncidentService(
+        repository,
+        provider,
+        ContextClients("http://observability:8086", "http://deployment-engine:8085"),
+        publisher,
+        "http://deployment-engine:8085",
+        "/tmp/incident-ai-test-audit.log",
+    )
+
+    incident = await service.process_alert(
+        AlertEvent(
+            type="alert.fired",
+            org_id="org-1",
+            project_id="project-1",
+            created_at=datetime.now(timezone.utc),
+            alert_id="alert-auto-1",
+            severity="critical",
+            metric="ready_pod_count",
+            value=0,
+            threshold=1,
+        )
+    )
+
+    assert incident.ai_diagnosis["auto_execute"] is True
+    assert len(incident.ai_actions) >= 1
+    assert incident.ai_actions[0]["action"] == "restart_pods"
+    assert incident.ai_actions[0]["source"] == "auto"
+
+    subjects = [subject for subject, _payload in publisher.subjects]
+    assert "incident.created" in subjects
+    assert "autoheal.triggered" in subjects
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_qdrant_similar_included():
     respx.get("http://observability:8086/metrics/project-1").mock(return_value=httpx.Response(200, json=[]))
     respx.get("http://deployment-engine:8085/deployments").mock(return_value=httpx.Response(200, json=[]))
     provider = CapturingProvider([
@@ -309,9 +377,86 @@ async def test_qdrant_similar_included():
             }
         )
     ])
-    service = IncidentService(FakeRepository(), provider, SimilarClients("http://observability:8086", "http://deployment-engine:8085"), FakePublisher(), "http://deployment-engine:8085", "/tmp/incident-ai-test-audit.log")
+    memory_store = FakeMemoryStore([
+        {"incident_id": "old-1", "summary": "Previous restart fixed the issue.", "score": 0.91}
+    ])
+    service = IncidentService(FakeRepository(), provider, ContextClients("http://observability:8086", "http://deployment-engine:8085"), FakePublisher(), "http://deployment-engine:8085", "/tmp/incident-ai-test-audit.log", memory_store=memory_store)
     await service.process_alert(AlertEvent(type="alert.fired", org_id="org-1", project_id="project-1", created_at=datetime.now(timezone.utc), alert_id="alert-1", severity="critical", metric="error_rate_pct", value=8, threshold=5))
     assert "Previous restart fixed the issue." in provider.prompts[0]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_qdrant_memory_upsert_called_after_processing():
+    respx.get("http://observability:8086/metrics/project-1").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("http://deployment-engine:8085/deployments").mock(return_value=httpx.Response(200, json=[]))
+    provider = CapturingProvider([
+        json.dumps(
+            {
+                "root_cause": "Memory persistence check.",
+                "confidence": 0.9,
+                "reasoning": "Store incident for later retrieval.",
+                "recommended_actions": [],
+                "auto_execute": False,
+            }
+        )
+    ])
+    memory_store = FakeMemoryStore([])
+    service = IncidentService(
+        FakeRepository(),
+        provider,
+        ContextClients("http://observability:8086", "http://deployment-engine:8085"),
+        FakePublisher(),
+        "http://deployment-engine:8085",
+        "/tmp/incident-ai-test-audit.log",
+        memory_store=memory_store,
+    )
+
+    await service.process_alert(
+        AlertEvent(
+            type="alert.fired",
+            org_id="org-1",
+            project_id="project-1",
+            created_at=datetime.now(timezone.utc),
+            alert_id="alert-memory-1",
+            severity="warning",
+            metric="cpu_pct",
+            value=95,
+            threshold=80,
+        )
+    )
+
+    assert len(memory_store.upserts) == 1
+    assert memory_store.upserts[0][0] == "incident-1"
+
+
+@pytest.mark.asyncio
+async def test_get_similar_uses_memory_store_and_excludes_self():
+    repository = FakeRepository()
+    await repository.insert_incident(
+        "alert-1",
+        "project-1",
+        {"root_cause": "Known issue", "confidence": 0.9, "reasoning": "x", "recommended_actions": [], "auto_execute": False},
+        [{"action": "restart_pods", "status": "accepted"}],
+    )
+    memory_store = FakeMemoryStore([
+        {"incident_id": "incident-older", "score": 0.93, "summary": "Older similar issue"}
+    ])
+    service = IncidentService(
+        repository,
+        CapturingProvider([]),
+        ContextClients("http://observability:8086", "http://deployment-engine:8085"),
+        FakePublisher(),
+        "http://deployment-engine:8085",
+        "/tmp/incident-ai-test-audit.log",
+        memory_store=memory_store,
+    )
+
+    results = await service.get_similar("incident-1")
+
+    assert len(results) == 1
+    assert results[0]["incident_id"] == "incident-older"
+    assert memory_store.search_calls[0][3] == "incident-1"
 
 
 @pytest.mark.asyncio

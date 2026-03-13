@@ -192,6 +192,9 @@ jobs:
           echo "### Compose Service State" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           docker compose ps >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p /tmp/phase3-incident-ci
+          docker compose ps > /tmp/phase3-incident-ci/compose-ps.txt
+          docker compose logs --no-color > /tmp/phase3-incident-ci/compose-logs.txt
 
       - name: Record phase3 smoke runtime
         if: always()
@@ -204,6 +207,14 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Phase 3 Incident Smoke Runtime" >> "$GITHUB_STEP_SUMMARY"
           echo "- Elapsed: ${mins}m ${secs}s (${elapsed}s)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload phase3 incident diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-incident-ci-diagnostics
+          path: /tmp/phase3-incident-ci
+          if-no-files-found: warn
 
       - name: Dump compose logs on failure
         if: failure()

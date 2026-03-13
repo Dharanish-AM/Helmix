@@ -49,7 +49,7 @@ Priority values:
 | 0 | Foundation | Days 1-3 | Done | 100% | All 7 Phase 0 acceptance criteria verified Pass |
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
-| 3 | Observability and AI Incident Engine | Weeks 7-10 | In Progress | 80% | Observability latency and zero-pod rule tests expanded; incident-ai deployment context enriched with structured DeploymentContext, concrete per-rule action routing, and 14 Python tests; dashboard incidents and observability pages live |
+| 3 | Observability and AI Incident Engine | Weeks 7-10 | In Progress | 95% | Observability, incident diagnosis/context, auto-remediation, dashboard incident tooling, and Qdrant memory retrieval are implemented and locally validated; remaining work is first CI run verification for the new Phase 3 incident smoke job |
 | 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Pending Phase 3 completion |
 
 ## Active Sprint Focus
@@ -112,11 +112,11 @@ Current sprint goal: Validate the first complete Phase 3 backend loop: observabi
 
 ### Phase 3 Checklist
 
-- [ ] Observability metric pipeline and alerting rules complete
-- [ ] Incident AI diagnosis and context gathering complete
-- [ ] Auto-remediation workflow complete
-- [ ] Qdrant memory integration complete
-- [ ] Phase 3 unit and e2e tests passing
+- [x] Observability metric pipeline and alerting rules complete
+- [x] Incident AI diagnosis and context gathering complete
+- [x] Auto-remediation workflow complete
+- [x] Qdrant memory integration complete
+- [x] Phase 3 unit and e2e tests passing
 
 ### Phase 4 Checklist
 
@@ -209,6 +209,9 @@ Use one line per update.
 | 2026-03-13 | Collected local reliability baseline for `make test-e2e-phase3-incident` over 3 consecutive runs after CI wiring: pass/pass/pass with wall times 88.89s, 102.47s, 91.50s (no local flakes observed) |
 | 2026-03-13 | Refined CI Phase 3 incident refresh step from no-op `docker compose build incident-ai` to `docker compose pull incident-ai` (service uses `image: python:3.12-slim`); validated revised sequence with local `docker compose pull incident-ai && make test-e2e-phase3-incident` pass |
 | 2026-03-13 | Added first-run CI observability instrumentation for `phase3-incident-e2e-smoke`: job timeout guard, compose service-state summary, and elapsed runtime summary in `GITHUB_STEP_SUMMARY` to speed flake triage after push/PR |
+| 2026-03-13 | Implemented incident-ai auto-remediation execution path for `auto_execute=true` (executes recommended/fallback actions, appends action history, publishes `autoheal.triggered` with `source=auto`), added regression test `test_auto_execute_runs_actions_and_publishes_autoheal`, and validated with containerized `pytest tests -q` (16/16 pass) plus `make test-e2e-phase3-incident` pass |
+| 2026-03-13 | Implemented Qdrant memory integration in incident-ai with collection bootstrap, deterministic local embeddings, top-3 similar incident retrieval for diagnosis and `/incidents/{id}/similar`, plus incident memory upsert after processing; validated with containerized `pytest tests -q` (18/18 pass) and `make test-e2e-phase3-incident` pass |
+| 2026-03-13 | Added CI artifact capture for `phase3-incident-e2e-smoke` (`compose-ps.txt` and `compose-logs.txt`) so the first external GitHub Actions run has preserved diagnostics even when the job flakes or fails |
 
 ### Phase 3 Acceptance
 
@@ -284,4 +287,4 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 
 ## Next Actions
 
-1. On next push/PR, verify first GitHub Actions run of `phase3-incident-e2e-smoke` and capture runtime + any CI-only flake signals.
+1. On next push/PR, verify first GitHub Actions run of `phase3-incident-e2e-smoke`, review job summary plus uploaded diagnostics artifact, and capture any CI-only flake signals.

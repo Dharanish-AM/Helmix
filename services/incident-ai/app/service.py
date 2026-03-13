@@ -11,6 +11,7 @@ import structlog
 
 from .context_clients import ContextClients
 from .llm.provider import LLMProvider
+from .memory_store import NoOpIncidentMemoryStore
 from .models import AlertEvent, DeploymentContext, Diagnosis, IncidentListResponse, IncidentSummary, ManualActionRequest, ManualActionResponse
 from .repository import IncidentRepository
 
@@ -24,6 +25,7 @@ class IncidentService:
         publisher: "NATSPublisherProtocol",
         deployment_engine_url: str,
         audit_log_path: str,
+        memory_store: Any | None = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -31,17 +33,24 @@ class IncidentService:
         self._publisher = publisher
         self._deployment_engine_url = deployment_engine_url.rstrip("/")
         self._audit_log_path = Path(audit_log_path)
+        self._memory_store = memory_store or NoOpIncidentMemoryStore()
         self._logger = structlog.get_logger("incident-ai")
 
     async def process_alert(self, event: AlertEvent) -> IncidentSummary:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            metrics, deployments, logs, similar_incidents = await asyncio.gather(
+            metrics, deployments, logs = await asyncio.gather(
                 self._context_clients.fetch_metrics(client, event.project_id),
                 self._context_clients.fetch_recent_deployments(client, event.project_id),
                 self._context_clients.fetch_logs(client, event.project_id),
-                self._context_clients.fetch_similar_incidents(client, event.project_id),
             )
         # deployments is now List[DeploymentContext]
+
+        memory_query = self._build_memory_query(event, metrics, logs)
+        similar_incidents = await self._memory_store.search_similar(
+            event.project_id,
+            memory_query,
+            limit=3,
+        )
 
         prompt = self._build_prompt(event, metrics, logs, deployments, similar_incidents)
         diagnosis = await self._diagnose(prompt)
@@ -63,7 +72,52 @@ class IncidentService:
                 "alert_id": event.alert_id,
             },
         )
-        return incident
+
+        if diagnosis.auto_execute:
+            planned_actions = [
+                action.model_dump(mode="json")
+                for action in diagnosis.recommended_actions
+            ]
+            if not planned_actions:
+                planned_actions = self.recommended_action_sequence(event.metric)
+
+            execution_results = await self.execute_actions_until_success(planned_actions)
+            for result in execution_results:
+                action_name = str(result.get("action", "unknown_action"))
+                status = str(result.get("status", "accepted"))
+                action_entry = {
+                    "action": action_name,
+                    "params": {},
+                    "status": status,
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "auto",
+                }
+                await self._repository.append_action(incident.id, action_entry)
+                await self._publisher.publish(
+                    "autoheal.triggered",
+                    {
+                        "id": incident.id,
+                        "type": "autoheal.triggered",
+                        "org_id": event.org_id,
+                        "project_id": event.project_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "incident_id": incident.id,
+                        "action": action_name,
+                        "status": status,
+                        "source": "auto",
+                    },
+                )
+
+        latest = await self._repository.get_incident(incident.id)
+        final_incident = latest or incident
+        await self._memory_store.upsert_incident_memory(
+            incident_id=final_incident.id,
+            project_id=final_incident.project_id,
+            alert_id=final_incident.alert_id,
+            summary=str(final_incident.ai_diagnosis.get("root_cause", "")),
+            actions_taken=list(final_incident.ai_actions),
+        )
+        return final_incident
 
     async def list_incidents(self, project_id: str, limit: int, offset: int) -> IncidentListResponse:
         items, total = await self._repository.list_incidents(project_id, limit, offset)
@@ -76,7 +130,17 @@ class IncidentService:
         incident = await self._repository.get_incident(incident_id)
         if incident is None:
             return []
-        return [{"incident_id": incident.id, "score": 0.0, "summary": incident.ai_diagnosis.get("root_cause", "")}] 
+        query_text = self._build_incident_memory_text(
+            incident.alert_id,
+            str(incident.ai_diagnosis.get("root_cause", "")),
+            list(incident.ai_actions),
+        )
+        return await self._memory_store.search_similar(
+            incident.project_id,
+            query_text,
+            limit=3,
+            exclude_incident_id=incident.id,
+        )
 
     async def trigger_manual_action(self, incident_id: str, request: ManualActionRequest) -> ManualActionResponse:
         incident = await self._repository.get_incident(incident_id)
@@ -250,6 +314,25 @@ class IncidentService:
             "Available actions: rollback_deployment, scale_pods, restart_pods, increase_memory_limit.\n"
         )
         return prompt
+
+    def _build_memory_query(
+        self,
+        event: AlertEvent,
+        metrics: list[dict[str, Any]],
+        logs: list[str],
+    ) -> str:
+        metric_keys = sorted({key for item in metrics if isinstance(item, dict) for key in item.keys()})
+        log_excerpt = " ".join(logs[:3]) if logs else ""
+        return f"project={event.project_id} metric={event.metric} severity={event.severity} threshold={event.threshold} keys={' '.join(metric_keys)} logs={log_excerpt}".strip()
+
+    def _build_incident_memory_text(
+        self,
+        alert_id: str,
+        root_cause: str,
+        actions: list[dict[str, Any]],
+    ) -> str:
+        action_names = [str(action.get("action", "")) for action in actions]
+        return f"{root_cause}. Alert: {alert_id}. Actions: {', '.join(a for a in action_names if a)}".strip()
 
 
 class NATSPublisherProtocol:
