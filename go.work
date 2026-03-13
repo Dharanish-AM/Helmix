@@ -1,0 +1,15 @@
+go 1.23.0
+
+use (
+	./services/api-gateway
+	./services/auth-service
+	./services/repo-analyzer
+	./services/infra-generator
+	./services/pipeline-generator
+	./services/deployment-engine
+	./services/observability
+	./libs/event-sdk
+	./libs/auth
+	./libs/shared-utils
+	./cli/helmix-cli
+)
