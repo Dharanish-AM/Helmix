@@ -102,6 +102,7 @@ services:
       DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      REPO_ANALYZER_URL: http://repo-analyzer:8082
       COOKIE_SECURE: "false"
       REFRESH_TOKEN_COOKIE_NAME: helmix_refresh_token
       OAUTH_STATE_COOKIE_NAME: helmix_oauth_state

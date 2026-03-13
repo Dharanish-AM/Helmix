@@ -19,6 +19,16 @@ type User struct {
 	AvatarURL string `json:"avatar_url"`
 }
 
+// Repository is the subset of GitHub repository data needed by the dashboard picker.
+type Repository struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
 type emailAddress struct {
 	Email    string `json:"email"`
 	Primary  bool   `json:"primary"`
@@ -158,6 +168,47 @@ func (c *Client) AuthorizeURL(state string) string {
 	values.Set("scope", "read:user user:email repo")
 	values.Set("state", state)
 	return c.oauthBaseURL + "/authorize?" + values.Encode()
+}
+
+// ListRepositories loads repositories the authenticated user can access.
+func (c *Client) ListRepositories(ctx context.Context, accessToken string, limit int) ([]Repository, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	reposURL, err := url.Parse(c.apiURL("user/repos"))
+	if err != nil {
+		return nil, fmt.Errorf("parse repos url: %w", err)
+	}
+	query := reposURL.Query()
+	query.Set("sort", "updated")
+	query.Set("per_page", fmt.Sprintf("%d", limit))
+	query.Set("affiliation", "owner,collaborator,organization_member")
+	reposURL.RawQuery = query.Encode()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, reposURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create repos request: %w", err)
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch repositories: %w", err)
+	}
+	defer response.Body.Close()
+
+	var repos []Repository
+	if err := json.NewDecoder(response.Body).Decode(&repos); err != nil {
+		return nil, fmt.Errorf("decode repositories response: %w", err)
+	}
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("repositories request failed with status %d", response.StatusCode)
+	}
+
+	return repos, nil
 }
 
 func (c *Client) apiURL(relativePath string) string {

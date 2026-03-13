@@ -50,32 +50,22 @@ Priority values:
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
 | 3 | Observability and AI Incident Engine | Weeks 7-10 | Done | 100% | All 11 Phase 3 acceptance criteria verified Pass locally and on CI; phase1-e2e-smoke and phase3-incident-e2e-smoke both passed on GitHub Actions run #5 (3m 46s, Success) |
-| 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Ready to begin Phase 4 planning and implementation |
+| 4 | Production Hardening | Weeks 11-12 | In Progress | 20% | Phase 4.1 Multi-tenancy & RBAC org endpoints implemented; Phase 4.2–4.5 pending |
 
 ## Active Sprint Focus
 
-Current sprint goal: Close out Phase 3 verification and prepare the Phase 4 implementation backlog.
+Current sprint goal: Begin Phase 4 Production Hardening — 4.1 (Multi-tenancy & RBAC) complete.
 
-Sprint status note: All listed Phase 2 and Phase 3 sprint tasks below are complete; Phase 4 kickoff tasks are the next backlog slice.
+Sprint status note: Phase 4.1 org/RBAC foundation is done. Phase 4.2 (Vault), 4.3 (Terraform), 4.4 (Security Hardening), and 4.5 (Full CLI) are next.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
-| P2-01 | Implement infra-generator `/generate` endpoint with stack template selection | P0 | Team | Done | 2026-03-16 | 2026-03-13 |
-| P2-02 | Add infra-generator unit and API tests for supported and unsupported stacks | P0 | Team | Done | 2026-03-16 | 2026-03-13 |
-| P2-03 | Add Phase 2 acceptance criteria table and command evidence fields | P1 | Team | Done | 2026-03-17 | 2026-03-13 |
-| P2-04 | Integrate infra-generator into gateway and compose runtime path | P1 | Team | Done | 2026-03-17 | 2026-03-13 |
-| P2-05 | Implement pipeline-generator `/generate` endpoint with workflow template selection | P0 | Team | Done | 2026-03-17 | 2026-03-13 |
-| P2-06 | Add pipeline-generator unit and API tests plus compose wiring | P0 | Team | Done | 2026-03-17 | 2026-03-13 |
-| P2-07 | Implement deployment-engine `/deploy`, status, and rollback endpoints with DB-backed state transitions | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
-| P2-08 | Add deployment-engine proxy, compose smoke, and full flow e2e coverage | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
-| P3-01 | Implement observability snapshot ingestion, recent metrics API, and open alerts API | P0 | Team | Done | 2026-03-20 | 2026-03-13 |
-| P3-02 | Add observability rule evaluation, alert deduplication, and alert.fired publication | P0 | Team | Done | 2026-03-20 | 2026-03-13 |
-| P3-03 | Implement incident-ai alert intake, diagnosis persistence, and incident query endpoints | P0 | Team | Done | 2026-03-21 | 2026-03-13 |
-| P3-04 | Add manual incident action path and incident-created smoke validation | P0 | Team | Done | 2026-03-21 | 2026-03-13 |
-| P3-05 | Expand observability latency and zero-pod rule unit and e2e smoke coverage | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
-| P3-06 | Enrich incident-ai deployment history context (DeploymentContext model, minutes_since_deploy) | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
-| P3-07 | Add per-rule concrete manual action routing and restart-without-deployment-id fallback | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
-| P3-08 | Add dashboard /incidents and /observability UI pages and Phase 3 API fetchers in lib/api.ts | P1 | Team | Done | 2026-03-22 | 2026-03-13 |
+| P4-01 | Implement org management endpoints (create, invite, accept-invite, list/update/remove members) in auth-service | P0 | Team | Done | 2026-03-13 | 2026-03-13 |
+| P4-02 | Add org_invites migration, RequireRole tests, gateway proxy for /api/v1/orgs | P0 | Team | Done | 2026-03-13 | 2026-03-13 |
+| P4-03 | Implement Vault integration (AppRole per service, secrets CRUD API) | P0 | Team | Not Started | 2026-03-14 | 2026-03-13 |
+| P4-04 | Create Terraform modules (VPC, K8s, DB, cache, registry) for AWS/GCP/Azure | P1 | Team | Not Started | 2026-03-15 | 2026-03-13 |
+| P4-05 | Security hardening: headers middleware, input validation, Trivy scanning, rate limiting | P0 | Team | Not Started | 2026-03-15 | 2026-03-13 |
+| P4-06 | Full CLI (Cobra + Viper): all commands + make cli-build for 3 platforms | P1 | Team | Not Started | 2026-03-16 | 2026-03-13 |
 
 ## Phase Checklists
 
@@ -122,7 +112,10 @@ Sprint status note: All listed Phase 2 and Phase 3 sprint tasks below are comple
 
 ### Phase 4 Checklist
 
-- [ ] Multi-tenancy and RBAC complete
+- [x] Multi-tenancy and RBAC org endpoints implemented (POST /orgs, POST /orgs/invite, POST /orgs/accept-invite, GET /orgs/members, PATCH /orgs/members/{user_id}, DELETE /orgs/members/{user_id})
+- [x] RequireRole middleware tested for all role scenarios (allow/deny/unauthenticated)
+- [x] Gateway proxy for /api/v1/orgs → auth-service
+- [x] org_invites migration (000009) applied
 - [ ] Vault secret management complete
 - [ ] Terraform modules for cloud providers complete
 - [ ] Security hardening controls complete
@@ -218,6 +211,7 @@ Use one line per update.
 | 2026-03-13 | Reduced CI noise for rerun by opting workflow into Node 24 action runtime and setting `actions/setup-go` cache dependency path to `${matrix.module}/go.sum`, removing module-cache warnings caused by missing root `go.sum` |
 | 2026-03-13 | GitHub Actions run #5 passed all jobs (Success, 3m 46s, 1 artifact): 9 Go test matrix jobs, Python tests, Frontend production build, Phase 1 E2E Smoke (2m 56s), Phase 3 Incident E2E Smoke (2m 52s); Phase 3 marked Done at 100% |
 | 2026-03-13 | Re-ran fresh local Phase 1 -> Phase 3 validation (`make test-e2e-phase1`, `make test-e2e-phase2-flow`, `make test-e2e-phase3-observability`, `make test-e2e-phase3-incident`): all pass; added `phase2-e2e-smoke` to `.github/workflows/ci.yml` and relaxed observability compose healthcheck timing to tolerate cold-start `go run` dependency downloads |
+| 2026-03-13 | Started Phase 4: implemented Phase 4.1 Multi-tenancy & RBAC — org_invites migration (000009), org store methods (CreateOrg/GetOrgMembers/CreateInvite/AcceptInvite/UpdateMemberRole/RemoveMember), six org endpoints on auth-service with RequireRole guards, /api/v1/orgs gateway proxy, RequireRole middleware tests (allow/deny/unauthenticated), gateway integration tests for orgs create/list/unauthenticated; all tests pass (`libs/auth`, `auth-service`, `api-gateway`) |
 
 ### Phase 3 Acceptance
 
@@ -294,4 +288,8 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 ## Next Actions
 
 1. ~~Re-run GitHub Actions after the Qdrant dependency and CI warning fixes, then verify `phase1-e2e-smoke` and `phase3-incident-e2e-smoke` both pass.~~ **Done** — CI run #5 passed (Success, 3m 46s).
-2. Begin Phase 4: multi-tenancy RBAC, Vault secret management, Terraform modules, security hardening, full CLI command set.
+2. ~~Begin Phase 4: multi-tenancy RBAC, Vault secret management, Terraform modules, security hardening, full CLI command set.~~ **In Progress** — Phase 4.1 org/RBAC done.
+3. Phase 4.2: Vault integration — AppRole per service, `GET/POST/DELETE /secrets/{project_id}` on gateway, infra-generator ExternalSecret CRD templates.
+4. Phase 4.3: Terraform modules — VPC, Kubernetes (EKS/GKE/AKS), DB, cache, registry; `make tf-plan/tf-apply/tf-destroy`.
+5. Phase 4.4: Security hardening — security headers + input-validation middleware on gateway, Trivy image scanning, K8s NetworkPolicies, auth rate limiting + audit log table.
+6. Phase 4.5: Full CLI — Cobra + Viper `helmix` binary with all guide commands; `make cli-build` for 3 platforms.

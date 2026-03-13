@@ -1,14 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +54,72 @@ type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type githubRepoResponse struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type githubReposResponse struct {
+	Items []githubRepoResponse `json:"items"`
+}
+
+type triggerRepoAnalysisRequest struct {
+	RepoID     string `json:"repo_id"`
+	GitHubRepo string `json:"github_repo"`
+}
+
+type repoAnalyzeProxyRequest struct {
+	RepoURL     string `json:"repo_url"`
+	GitHubToken string `json:"github_token"`
+	RepoID      string `json:"repo_id"`
+}
+
+type createOrgRequest struct {
+	Name string `json:"name"`
+}
+
+type createOrgResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	OwnerID   string    `json:"owner_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type inviteRequest struct {
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+type inviteResponse struct {
+	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type acceptInviteRequest struct {
+	Token string `json:"token"`
+}
+
+type memberResponse struct {
+	UserID    string `json:"user_id"`
+	Username  string `json:"username"`
+	Email     string `json:"email"`
+	AvatarURL string `json:"avatar_url"`
+	Role      string `json:"role"`
+}
+
+type updateRoleRequest struct {
+	Role string `json:"role"`
+}
+
 type Server struct {
 	config       config.Config
 	logger       *slog.Logger
@@ -88,6 +158,26 @@ func (s *Server) buildRouter() chi.Router {
 	router.Group(func(protected chi.Router) {
 		protected.Use(sharedauth.JWTMiddleware(s.config.JWTPublicKeyPath))
 		protected.Get("/auth/me", s.handleMe)
+		protected.Get("/auth/github/repos", s.handleGitHubRepos)
+		protected.Post("/auth/repos/analyze", s.handleTriggerRepoAnalysis)
+
+		// Org management — any authenticated user may create an org or accept an invite.
+		protected.Post("/orgs", s.handleCreateOrg)
+		protected.Post("/orgs/accept-invite", s.handleAcceptInvite)
+		protected.Get("/orgs/members", s.handleListMembers)
+
+		// Invite and role management — restricted to owner/admin.
+		protected.Group(func(ownerAdmin chi.Router) {
+			ownerAdmin.Use(sharedauth.RequireRole("owner", "admin"))
+			ownerAdmin.Post("/orgs/invite", s.handleInvite)
+			ownerAdmin.Delete("/orgs/members/{user_id}", s.handleRemoveMember)
+		})
+
+		// Role update — owner only to prevent privilege escalation.
+		protected.Group(func(ownerOnly chi.Router) {
+			ownerOnly.Use(sharedauth.RequireRole("owner"))
+			ownerOnly.Patch("/orgs/members/{user_id}", s.handleUpdateMemberRole)
+		})
 	})
 
 	router.Post("/auth/refresh", s.handleRefresh)
@@ -231,6 +321,10 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 	userRecord, err := s.store.GetUserByID(r.Context(), identity.UserID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_user", fmt.Errorf("refresh token user no longer exists: %w", err))
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, "load_user_failed", fmt.Errorf("load user after refresh: %w", err))
 		return
 	}
@@ -252,6 +346,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 	userRecord, err := s.store.GetUserByID(r.Context(), user.UserID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_user", fmt.Errorf("authenticated user no longer exists: %w", err))
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, "load_user_failed", fmt.Errorf("load current user: %w", err))
 		return
 	}
@@ -259,6 +357,149 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]userResponseBody{
 		"user": toUserResponse(userRecord),
 	})
+}
+
+func (s *Server) handleGitHubRepos(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	tokenRecord, err := s.store.GetGitHubTokenByUserID(r.Context(), user.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_user", fmt.Errorf("authenticated user no longer exists: %w", err))
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "load_github_token_failed", fmt.Errorf("load encrypted github token: %w", err))
+		return
+	}
+	if len(tokenRecord.Nonce) == 0 || len(tokenRecord.Ciphertext) == 0 {
+		s.writeError(w, http.StatusUnauthorized, "github_token_missing", fmt.Errorf("github token not available for user"))
+		return
+	}
+
+	accessToken, err := security.Decrypt(s.config.TokenEncryptionKey, tokenRecord.Nonce, tokenRecord.Ciphertext)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "decrypt_token_failed", fmt.Errorf("decrypt github token: %w", err))
+		return
+	}
+
+	limit := 50
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit <= 0 {
+			s.writeError(w, http.StatusBadRequest, "invalid_limit", fmt.Errorf("limit must be a positive integer"))
+			return
+		}
+		if parsedLimit > 200 {
+			parsedLimit = 200
+		}
+		limit = parsedLimit
+	}
+
+	repos, err := s.githubClient.ListRepositories(r.Context(), accessToken, limit)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "github_repos_failed", fmt.Errorf("list github repositories: %w", err))
+		return
+	}
+
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	items := make([]githubRepoResponse, 0, len(repos))
+	for _, repo := range repos {
+		if search != "" {
+			name := strings.ToLower(repo.Name)
+			fullName := strings.ToLower(repo.FullName)
+			if !strings.Contains(name, search) && !strings.Contains(fullName, search) {
+				continue
+			}
+		}
+		items = append(items, githubRepoResponse{
+			ID:            repo.ID,
+			Name:          repo.Name,
+			FullName:      repo.FullName,
+			Private:       repo.Private,
+			DefaultBranch: repo.DefaultBranch,
+			UpdatedAt:     repo.UpdatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, githubReposResponse{Items: items})
+}
+
+func (s *Server) handleTriggerRepoAnalysis(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	var request triggerRepoAnalysisRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode analyze request: %w", err))
+		return
+	}
+	repoID := strings.TrimSpace(request.RepoID)
+	githubRepo := strings.TrimSpace(strings.ToLower(request.GitHubRepo))
+	if repoID == "" || githubRepo == "" || !strings.Contains(githubRepo, "/") {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("repo_id and github_repo (owner/name) are required"))
+		return
+	}
+
+	tokenRecord, err := s.store.GetGitHubTokenByUserID(r.Context(), user.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_user", fmt.Errorf("authenticated user no longer exists: %w", err))
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "load_github_token_failed", fmt.Errorf("load encrypted github token: %w", err))
+		return
+	}
+
+	accessToken, err := security.Decrypt(s.config.TokenEncryptionKey, tokenRecord.Nonce, tokenRecord.Ciphertext)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "decrypt_token_failed", fmt.Errorf("decrypt github token: %w", err))
+		return
+	}
+
+	body, err := json.Marshal(repoAnalyzeProxyRequest{
+		RepoURL:     "https://github.com/" + githubRepo + ".git",
+		GitHubToken: accessToken,
+		RepoID:      repoID,
+	})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "marshal_request_failed", fmt.Errorf("marshal repo analyze request: %w", err))
+		return
+	}
+
+	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(s.config.RepoAnalyzerURL, "/")+"/analyze", bytes.NewReader(body))
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "build_request_failed", fmt.Errorf("create repo-analyzer request: %w", err))
+		return
+	}
+	upstreamRequest.Header.Set("Content-Type", "application/json")
+	upstreamRequest.Header.Set("X-Helmix-Org-ID", user.OrgID)
+
+	response, err := (&http.Client{Timeout: s.config.HTTPClientTimeout}).Do(upstreamRequest)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "analysis_failed", fmt.Errorf("call repo-analyzer: %w", err))
+		return
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		s.writeError(w, http.StatusBadGateway, "analysis_failed", fmt.Errorf("repo-analyzer returned status %d", response.StatusCode))
+		return
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		s.writeError(w, http.StatusBadGateway, "analysis_failed", fmt.Errorf("decode repo-analyzer response: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -386,4 +627,204 @@ func (w *statusRecorder) Unwrap() http.ResponseWriter {
 
 func ShutdownContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), timeout)
+}
+
+// ── Org management handlers ──────────────────────────────────────────────────
+
+func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	var req createOrgRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode create org request: %w", err))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("name is required"))
+		return
+	}
+
+	org, err := s.store.CreateOrg(r.Context(), user.UserID, name)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "create_org_failed", fmt.Errorf("create org: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, createOrgResponse{
+		ID:        org.ID,
+		Name:      org.Name,
+		Slug:      org.Slug,
+		OwnerID:   org.OwnerID,
+		CreatedAt: org.CreatedAt,
+	})
+}
+
+func (s *Server) handleInvite(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	var req inviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode invite request: %w", err))
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("email is required"))
+		return
+	}
+	role := strings.ToLower(strings.TrimSpace(req.Role))
+	if role == "" {
+		role = "developer"
+	}
+	validRoles := map[string]bool{"owner": true, "admin": true, "developer": true, "viewer": true}
+	if !validRoles[role] {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("role must be one of: owner, admin, developer, viewer"))
+		return
+	}
+
+	invite, err := s.store.CreateInvite(r.Context(), user.OrgID, email, role, user.UserID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "invite_failed", fmt.Errorf("create invite: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, inviteResponse{
+		ID:        invite.ID,
+		OrgID:     invite.OrgID,
+		Email:     invite.Email,
+		Role:      invite.Role,
+		Token:     invite.Token,
+		ExpiresAt: invite.ExpiresAt,
+	})
+}
+
+func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	var req acceptInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode accept invite request: %w", err))
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("token is required"))
+		return
+	}
+
+	orgID, err := s.store.AcceptInvite(r.Context(), token, user.UserID)
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "expired") || strings.Contains(errMsg, "already accepted") {
+			s.writeError(w, http.StatusBadRequest, "invalid_invite", err)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "accept_invite_failed", fmt.Errorf("accept invite: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"org_id": orgID, "status": "joined"})
+}
+
+func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	members, err := s.store.GetOrgMembers(r.Context(), user.OrgID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_members_failed", fmt.Errorf("list org members: %w", err))
+		return
+	}
+
+	items := make([]memberResponse, 0, len(members))
+	for _, m := range members {
+		items = append(items, memberResponse{
+			UserID:    m.UserID,
+			Username:  m.Username,
+			Email:     m.Email,
+			AvatarURL: m.AvatarURL,
+			Role:      m.Role,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"members": items, "org_id": user.OrgID})
+}
+
+func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	targetUserID := chi.URLParam(r, "user_id")
+	if strings.TrimSpace(targetUserID) == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("user_id path parameter is required"))
+		return
+	}
+
+	var req updateRoleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode update role request: %w", err))
+		return
+	}
+	role := strings.ToLower(strings.TrimSpace(req.Role))
+	// Owner cannot be assigned through this endpoint to prevent uncontrolled privilege escalation.
+	validRoles := map[string]bool{"admin": true, "developer": true, "viewer": true}
+	if !validRoles[role] {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("role must be one of: admin, developer, viewer"))
+		return
+	}
+
+	if err := s.store.UpdateMemberRole(r.Context(), user.OrgID, targetUserID, role); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeError(w, http.StatusNotFound, "member_not_found", err)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "update_role_failed", fmt.Errorf("update member role: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"user_id": targetUserID, "role": role, "status": "updated"})
+}
+
+func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
+	user := sharedauth.UserFromContext(r.Context())
+	if user == nil {
+		s.writeError(w, http.StatusUnauthorized, "missing_user", fmt.Errorf("authenticated user missing from context"))
+		return
+	}
+
+	targetUserID := chi.URLParam(r, "user_id")
+	if strings.TrimSpace(targetUserID) == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("user_id path parameter is required"))
+		return
+	}
+
+	if err := s.store.RemoveMember(r.Context(), user.OrgID, targetUserID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeError(w, http.StatusNotFound, "member_not_found", err)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "remove_member_failed", fmt.Errorf("remove member: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"user_id": targetUserID, "status": "removed"})
 }

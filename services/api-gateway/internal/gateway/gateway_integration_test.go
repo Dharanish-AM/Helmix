@@ -113,6 +113,7 @@ func newTestGatewayWithUpstream(t *testing.T, upstreamHandler http.Handler) *Gat
 		Port:                     "18080",
 		JWTPublicKeyPath:         publicKeyPath,
 		RedisURL:                 redisURL,
+		DashboardOrigin:          "http://localhost:3000",
 		AuthServiceURL:           upstream.URL,
 		RepoAnalyzerServiceURL:   upstream.URL,
 		InfraGeneratorServiceURL: upstream.URL,
@@ -170,6 +171,50 @@ func TestInfraGenerateProxyAuthorized(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"template":"docker-nextjs"`) {
 		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestAuthGitHubProxyPath(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/auth/github" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/auth/github")
+		}
+
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		_, _ = w.Write([]byte("redirect"))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github", nil)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusTemporaryRedirect)
+	}
+}
+
+func TestCORSPreflightAllowedForDashboardOrigin(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/auth/me", nil)
+	request.Header.Set("Origin", "http://localhost:3000")
+	request.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	request.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusNoContent)
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatalf("unexpected allow origin header: %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
 }
 
@@ -459,6 +504,87 @@ func TestIncidentActionProxyAuthorized(t *testing.T) {
 	gateway.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestOrgsCreateProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/orgs" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/orgs")
+		}
+		if strings.TrimSpace(r.Header.Get("X-Helmix-Org-ID")) == "" {
+			t.Fatal("expected X-Helmix-Org-ID header forwarded to upstream")
+		}
+		if strings.TrimSpace(r.Header.Get("X-Helmix-Role")) == "" {
+			t.Fatal("expected X-Helmix-Role header forwarded to upstream")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"org-new","name":"Acme","slug":"acme"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase4-create-org-user")
+
+	body := strings.NewReader(`{"name":"Acme"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/orgs", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusCreated)
+	}
+	if !strings.Contains(recorder.Body.String(), `"id":"org-new"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestOrgsMembersProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/orgs/members" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/orgs/members")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"members":[],"org_id":"phase1-org"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase4-list-members-user")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/members", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"org_id"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestOrgsUnauthenticatedRejected(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/members", nil)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 

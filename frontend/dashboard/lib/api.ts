@@ -25,6 +25,133 @@ export async function fetchCurrentUser(token: string): Promise<AuthUser> {
   return payload.user;
 }
 
+export type ConnectedRepo = {
+  repo_id: string;
+  project_id: string;
+  project_name: string;
+  github_repo: string;
+  default_branch: string;
+  detected_stack?: {
+    runtime?: string;
+    framework?: string;
+    [key: string]: unknown;
+  };
+  connected_at: string;
+};
+
+export async function fetchConnectedRepos(
+  token: string,
+  query = "",
+  limit = 20
+): Promise<ConnectedRepo[]> {
+  const params = new URLSearchParams();
+  if (query.trim() !== "") {
+    params.set("q", query.trim());
+  }
+  params.set("limit", String(limit));
+
+  const response = await fetch(authURL(`/api/v1/repos/projects?${params.toString()}`), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (response.status === 401) {
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(`connected_repos_failed:${response.status}`);
+  }
+
+  const payload = (await response.json()) as { items: ConnectedRepo[] };
+  return payload.items ?? [];
+}
+
+export async function connectRepository(
+  token: string,
+  githubRepo: string,
+  defaultBranch = "main"
+): Promise<ConnectedRepo> {
+  const response = await fetch(authURL("/api/v1/repos/projects"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ github_repo: githubRepo, default_branch: defaultBranch }),
+  });
+
+  if (response.status === 401) {
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(`connect_repo_failed:${response.status}`);
+  }
+
+  return response.json() as Promise<ConnectedRepo>;
+}
+
+export async function triggerRepositoryAnalysis(
+  token: string,
+  repoId: string,
+  githubRepo: string
+): Promise<void> {
+  const response = await fetch(authURL("/api/v1/auth/repos/analyze"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ repo_id: repoId, github_repo: githubRepo }),
+  });
+
+  if (response.status === 401) {
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(`analyze_repo_failed:${response.status}`);
+  }
+}
+
+export type GitHubRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  updated_at: string;
+};
+
+export async function fetchGitHubRepositories(
+  token: string,
+  query = "",
+  limit = 50
+): Promise<GitHubRepository[]> {
+  const params = new URLSearchParams();
+  if (query.trim() !== "") {
+    params.set("q", query.trim());
+  }
+  params.set("limit", String(limit));
+
+  const response = await fetch(authURL(`/api/v1/auth/github/repos?${params.toString()}`), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (response.status === 401) {
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(`github_repos_failed:${response.status}`);
+  }
+
+  const payload = (await response.json()) as { items: GitHubRepository[] };
+  return payload.items ?? [];
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 – Observability
 // ---------------------------------------------------------------------------

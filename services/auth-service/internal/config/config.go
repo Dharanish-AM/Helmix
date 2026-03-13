@@ -24,6 +24,7 @@ type Config struct {
 	DatabaseURL          string
 	RedisURL             string
 	DashboardURL         string
+	RepoAnalyzerURL      string
 	TokenEncryptionKey   []byte
 	JWTTTL               time.Duration
 	RefreshTTL           time.Duration
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		DatabaseURL:          strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		RedisURL:             strings.TrimSpace(os.Getenv("REDIS_URL")),
 		DashboardURL:         getEnv("DASHBOARD_URL", "http://localhost:3000"),
+		RepoAnalyzerURL:      getEnv("REPO_ANALYZER_URL", "http://repo-analyzer:8082"),
 		JWTTTL:               mustParseDuration(getEnv("JWT_TTL", "24h")),
 		RefreshTTL:           mustParseDuration(getEnv("REFRESH_TOKEN_TTL", "720h")),
 		RefreshCookieName:    getEnv("REFRESH_TOKEN_COOKIE_NAME", "helmix_refresh_token"),
@@ -125,7 +127,7 @@ func validate(config Config) error {
 		}
 	}
 
-	for _, rawURL := range []string{config.GitHubRedirectURL, config.GitHubOAuthBaseURL, config.GitHubAPIBaseURL, config.DashboardURL, config.DatabaseURL, config.RedisURL} {
+	for _, rawURL := range []string{config.GitHubRedirectURL, config.GitHubOAuthBaseURL, config.GitHubAPIBaseURL, config.DashboardURL, config.RepoAnalyzerURL, config.DatabaseURL, config.RedisURL} {
 		if _, err := url.Parse(rawURL); err != nil {
 			return fmt.Errorf("parse url %q: %w", rawURL, err)
 		}

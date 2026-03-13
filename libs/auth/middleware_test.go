@@ -96,6 +96,42 @@ func TestRequireRoleRejectsUnexpectedRole(t *testing.T) {
 	}
 }
 
+func TestRequireRoleAllowsMatchingRole(t *testing.T) {
+	for _, role := range []string{"owner", "admin", "developer"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			request = request.WithContext(ContextWithUser(request.Context(), &User{UserID: "user-4", Role: role}))
+			response := httptest.NewRecorder()
+
+			handler := RequireRole("owner", "admin", "developer")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("role %q: expected status %d, got %d", role, http.StatusNoContent, response.Code)
+			}
+		})
+	}
+}
+
+func TestRequireRoleRejectsUnauthenticated(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	response := httptest.NewRecorder()
+
+	handler := RequireRole("owner")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, response.Code)
+	}
+}
+
 func writeTestKeys(t *testing.T) (string, string) {
 	t.Helper()
 

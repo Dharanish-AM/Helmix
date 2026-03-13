@@ -1,23 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { fetchCurrentUser } from "@/lib/api";
+import {
+  connectRepository,
+  fetchConnectedRepos,
+  fetchCurrentUser,
+  fetchGitHubRepositories,
+  triggerRepositoryAnalysis,
+  type ConnectedRepo,
+  type GitHubRepository,
+} from "@/lib/api";
 import { type AuthUser, useAuthStore } from "@/lib/auth-store";
 
 type RepoCard = {
+  id: string;
   name: string;
   stack: string;
   status: string;
   lastDeploy: string;
+  analysisComplete: boolean;
 };
 
 type DashboardShellProps = {
   tokenFromQuery?: string | null;
 };
-
-const emptyRepos: RepoCard[] = [];
 
 export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
   const router = useRouter();
@@ -25,6 +33,14 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [repos, setRepos] = useState<RepoCard[]>([]);
+  const [repoQuery, setRepoQuery] = useState("");
+  const [reposLoading, setReposLoading] = useState(false);
+  const [githubRepos, setGitHubRepos] = useState<GitHubRepository[]>([]);
+  const [githubReposLoading, setGitHubReposLoading] = useState(false);
+  const [repoActionError, setRepoActionError] = useState<string | null>(null);
+  const [isConnectingRepo, setIsConnectingRepo] = useState(false);
+  const analyzedRepoIDsRef = useRef<Set<string>>(new Set());
   const { token, user, setSession, clearSession } = useAuthStore();
 
   const activeToken = tokenFromQuery ?? token;
@@ -78,6 +94,110 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
     router.replace("/login");
   }, [clearSession, loadError, router]);
 
+  useEffect(() => {
+    if (!activeToken || loadError) {
+      return;
+    }
+
+    let isCancelled = false;
+    setReposLoading(true);
+    setRepoActionError(null);
+
+    fetchConnectedRepos(activeToken)
+      .then((items) => {
+        if (isCancelled) {
+          return;
+        }
+        setRepos(items.map(toRepoCard));
+      })
+      .catch((error: Error) => {
+        if (isCancelled) {
+          return;
+        }
+        setRepoActionError(error.message);
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setReposLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeToken, loadError]);
+
+  useEffect(() => {
+    if (!isModalOpen || !activeToken) {
+      return;
+    }
+
+    let isCancelled = false;
+    const timeout = setTimeout(() => {
+      setGitHubReposLoading(true);
+      fetchGitHubRepositories(activeToken, repoQuery)
+        .then((items) => {
+          if (!isCancelled) {
+            setGitHubRepos(items);
+          }
+        })
+        .catch((error: Error) => {
+          if (!isCancelled) {
+            setRepoActionError(error.message);
+          }
+        })
+        .finally(() => {
+          if (!isCancelled) {
+            setGitHubReposLoading(false);
+          }
+        });
+    }, 250);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [activeToken, isModalOpen, repoQuery]);
+
+  useEffect(() => {
+    if (!activeToken || repos.length === 0) {
+      return;
+    }
+
+    const pendingRepos = repos.filter((repo) => {
+      if (analyzedRepoIDsRef.current.has(repo.id)) {
+        return false;
+      }
+      return !repo.analysisComplete;
+    });
+    if (pendingRepos.length === 0) {
+      return;
+    }
+
+    pendingRepos.forEach((repo) => analyzedRepoIDsRef.current.add(repo.id));
+
+    let isCancelled = false;
+    Promise.allSettled(
+      pendingRepos.map((repo) => triggerRepositoryAnalysis(activeToken, repo.id, repo.name))
+    )
+      .then(async () => {
+        if (isCancelled) {
+          return;
+        }
+        const refreshed = await fetchConnectedRepos(activeToken);
+        if (!isCancelled) {
+          setRepos(refreshed.map(toRepoCard));
+        }
+      })
+      .catch(() => {
+        // Keep the current UI state if analysis fails for any repo.
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeToken, repos]);
+
   if (!activeToken || isLoading) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-6xl items-center justify-center px-6 py-16">
@@ -95,6 +215,34 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
   const sessionUser = currentUser ?? user;
   if (!sessionUser) {
     return null;
+  }
+
+  const canConnectRepo = repoQuery.trim().includes("/");
+  const connectedRepoNames = new Set(repos.map((repo) => repo.name.toLowerCase()));
+
+  async function handleConnectRepository(fullName?: string, defaultBranch?: string) {
+    const targetRepo = (fullName ?? repoQuery).trim();
+    if (!activeToken || !targetRepo.includes("/") || isConnectingRepo) {
+      return;
+    }
+
+    setIsConnectingRepo(true);
+    setRepoActionError(null);
+    try {
+      const connected = await connectRepository(activeToken, targetRepo, defaultBranch || "main");
+      await triggerRepositoryAnalysis(activeToken, connected.repo_id, connected.github_repo);
+      const refreshed = await fetchConnectedRepos(activeToken);
+      setRepos(refreshed.map(toRepoCard));
+      const refreshedGitHubRepos = await fetchGitHubRepositories(activeToken, repoQuery);
+      setGitHubRepos(refreshedGitHubRepos);
+      setRepoQuery("");
+      setIsModalOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "connect_repo_failed";
+      setRepoActionError(message);
+    } finally {
+      setIsConnectingRepo(false);
+    }
   }
 
   return (
@@ -156,17 +304,38 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
               <h2 className="mt-2 text-2xl font-bold text-slate-900">Connected Repos</h2>
             </div>
             <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-amber-800">
-              {emptyRepos.length} linked
+              {repos.length} linked
             </span>
           </div>
 
-          {emptyRepos.length === 0 ? (
+          {reposLoading ? (
+            <div className="mt-8 rounded-[1.75rem] border border-dashed border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 p-10 text-center text-sm text-slate-600">
+              Loading connected repositories...
+            </div>
+          ) : null}
+
+          {!reposLoading && repos.length === 0 ? (
             <div className="mt-8 rounded-[1.75rem] border border-dashed border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 p-10 text-center">
               <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-white text-4xl shadow-sm">[]</div>
               <h3 className="mt-6 text-xl font-bold text-slate-900">No repositories connected yet</h3>
               <p className="mt-3 text-sm text-slate-600">
                 Use the connect flow to authorize a GitHub repository, then Helmix will analyze the stack and prepare the next automation stages.
               </p>
+            </div>
+          ) : null}
+
+          {!reposLoading && repos.length > 0 ? (
+            <div className="mt-6 space-y-3">
+              {repos.map((repo) => (
+                <div key={repo.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-semibold text-slate-900">{repo.name}</p>
+                    <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">{repo.status}</span>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">Stack: {repo.stack}</p>
+                  <p className="mt-1 text-xs text-slate-500">Connected {repo.lastDeploy}</p>
+                </div>
+              ))}
             </div>
           ) : null}
         </div>
@@ -219,22 +388,105 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
               </button>
             </div>
             <p className="mt-4 text-sm text-slate-600">
-              The authenticated dashboard flow is wired. Repository search and submission will connect to the next API slice once the repo list endpoints are added.
+              Browse your GitHub repositories and click connect, or type <span className="font-semibold">owner/name</span> manually.
             </p>
             <div className="mt-6 space-y-4">
               <input
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 outline-none"
-                disabled
+                onChange={(event) => setRepoQuery(event.target.value)}
                 placeholder="Search your GitHub repositories"
                 type="text"
+                value={repoQuery}
               />
-              <button className="w-full rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white opacity-60" disabled type="button">
-                Confirm Repository
+              {repoActionError ? <p className="text-xs text-rose-600">{repoActionError}</p> : null}
+              <button
+                className="w-full rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canConnectRepo || isConnectingRepo}
+                onClick={() => handleConnectRepository()}
+                type="button"
+              >
+                {isConnectingRepo ? "Connecting..." : "Confirm Repository"}
               </button>
+
+              {githubReposLoading ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  Loading your GitHub repositories...
+                </div>
+              ) : null}
+
+              {!githubReposLoading && githubRepos.length > 0 ? (
+                <div className="max-h-48 space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  {githubRepos.map((repo) => (
+                    <div key={repo.id} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2">
+                      <button
+                        className="flex-1 rounded-lg border border-transparent px-2 py-1 text-left text-sm text-slate-700 hover:border-amber-200"
+                        onClick={() => setRepoQuery(repo.full_name)}
+                        type="button"
+                      >
+                        <p className="font-semibold text-slate-900">{repo.full_name}</p>
+                        <p className="text-xs text-slate-500">
+                          {repo.private ? "Private" : "Public"} • Updated {formatRelativeTimestamp(repo.updated_at)}
+                        </p>
+                      </button>
+                      <button
+                        className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={isConnectingRepo || connectedRepoNames.has(repo.full_name.toLowerCase())}
+                        onClick={() => handleConnectRepository(repo.full_name, repo.default_branch)}
+                        type="button"
+                      >
+                        {connectedRepoNames.has(repo.full_name.toLowerCase()) ? "Connected" : "Connect"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {!githubReposLoading && githubRepos.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  No repositories found for this account/filter.
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
       ) : null}
     </main>
   );
+}
+
+function toRepoCard(repo: ConnectedRepo): RepoCard {
+  const runtime = typeof repo.detected_stack?.runtime === "string" ? repo.detected_stack.runtime.trim() : "";
+  const framework = typeof repo.detected_stack?.framework === "string" ? repo.detected_stack.framework.trim() : "";
+  const analysisComplete = Boolean(repo.detected_stack && Object.keys(repo.detected_stack).length > 0);
+  const stack = [runtime, framework].filter(Boolean).join(" / ");
+
+  return {
+    id: repo.repo_id,
+    name: repo.github_repo,
+    stack: stack || (analysisComplete ? "analyzed (stack unknown)" : "pending analysis"),
+    status: analysisComplete ? "analyzed" : "linked",
+    lastDeploy: formatRelativeTimestamp(repo.connected_at),
+    analysisComplete,
+  };
+}
+
+function formatRelativeTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    return "recently";
+  }
+
+  const diffMs = Date.now() - timestamp.getTime();
+  const diffMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
 }

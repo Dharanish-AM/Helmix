@@ -12,6 +12,7 @@ type Config struct {
 	Port                     string
 	JWTPublicKeyPath         string
 	RedisURL                 string
+	DashboardOrigin          string
 	AuthServiceURL           string
 	RepoAnalyzerServiceURL   string
 	InfraGeneratorServiceURL string
@@ -28,6 +29,7 @@ func Load() (Config, error) {
 		Port:                     getEnv("PORT", "8080"),
 		JWTPublicKeyPath:         strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY_PATH")),
 		RedisURL:                 strings.TrimSpace(os.Getenv("REDIS_URL")),
+		DashboardOrigin:          getEnv("DASHBOARD_ORIGIN", "http://localhost:3000"),
 		AuthServiceURL:           getEnv("AUTH_SERVICE_URL", "http://localhost:8081"),
 		RepoAnalyzerServiceURL:   getEnv("REPO_ANALYZER_SERVICE_URL", "http://localhost:8082"),
 		InfraGeneratorServiceURL: getEnv("INFRA_GENERATOR_SERVICE_URL", "http://localhost:8083"),
@@ -49,6 +51,7 @@ func Load() (Config, error) {
 	}
 
 	for _, rawURL := range []string{
+		config.DashboardOrigin,
 		config.AuthServiceURL,
 		config.RepoAnalyzerServiceURL,
 		config.InfraGeneratorServiceURL,

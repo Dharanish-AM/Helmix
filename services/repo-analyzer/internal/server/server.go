@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -30,6 +32,15 @@ type analyzeRequest struct {
 type analyzeResponse struct {
 	RepoID string          `json:"repo_id"`
 	Result analyzer.Result `json:"result"`
+}
+
+type connectRepoRequest struct {
+	GitHubRepo    string `json:"github_repo"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+type connectedReposResponse struct {
+	Items []store.ConnectedRepo `json:"items"`
 }
 
 type Server struct {
@@ -63,6 +74,8 @@ func (s *Server) buildRouter() chi.Router {
 	router := chi.NewRouter()
 	router.Use(s.loggingMiddleware)
 	router.Get("/health", s.handleHealth)
+	router.Get("/projects", s.handleListProjects)
+	router.Post("/projects", s.handleConnectRepo)
 	router.Post("/analyze", s.handleAnalyze)
 	return router
 }
@@ -132,6 +145,72 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, analyzeResponse{RepoID: request.RepoID, Result: result})
+}
+
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	orgID := strings.TrimSpace(r.Header.Get("X-Helmix-Org-ID"))
+	if orgID == "" {
+		s.writeError(w, http.StatusUnauthorized, "missing_org_context", fmt.Errorf("missing X-Helmix-Org-ID header"))
+		return
+	}
+
+	limit := 20
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid_limit", fmt.Errorf("limit must be an integer: %w", err))
+			return
+		}
+		limit = parsedLimit
+	}
+
+	items, err := s.store.ListConnectedRepos(r.Context(), orgID, r.URL.Query().Get("q"), limit)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_repos_failed", fmt.Errorf("list connected repos: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, connectedReposResponse{Items: items})
+}
+
+func (s *Server) handleConnectRepo(w http.ResponseWriter, r *http.Request) {
+	orgID := strings.TrimSpace(r.Header.Get("X-Helmix-Org-ID"))
+	if orgID == "" {
+		s.writeError(w, http.StatusUnauthorized, "missing_org_context", fmt.Errorf("missing X-Helmix-Org-ID header"))
+		return
+	}
+
+	var request connectRepoRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode connect repo request: %w", err))
+		return
+	}
+	if strings.TrimSpace(request.GitHubRepo) == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("github_repo is required"))
+		return
+	}
+
+	connectedRepo, err := s.store.CreateConnectedRepo(r.Context(), orgID, request.GitHubRepo, request.DefaultBranch)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "connect_repo_failed", fmt.Errorf("create connected repo: %w", err))
+		return
+	}
+
+	event := map[string]any{
+		"id":         randomID(),
+		"type":       string(eventsdk.RepoConnected),
+		"org_id":     orgID,
+		"project_id": connectedRepo.ProjectID,
+		"repo_id":    connectedRepo.RepoID,
+		"github_repo": connectedRepo.GitHubRepo,
+		"created_at": time.Now().UTC(),
+	}
+	if err := eventsdk.Publish(s.natsClient, event); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "publish_failed", fmt.Errorf("publish repo.connected event: %w", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, connectedRepo)
 }
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {

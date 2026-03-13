@@ -28,3 +28,23 @@ func Encrypt(key []byte, plaintext string) ([]byte, []byte, error) {
 	ciphertext := aead.Seal(nil, nonce, []byte(plaintext), nil)
 	return nonce, ciphertext, nil
 }
+
+// Decrypt decrypts AES-256-GCM ciphertext back to plaintext.
+func Decrypt(key, nonce, ciphertext []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("create cipher: %w", err)
+	}
+
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("create gcm: %w", err)
+	}
+
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt token: %w", err)
+	}
+
+	return string(plaintext), nil
+}
