@@ -1,4 +1,14 @@
 services:
+  jwt-keys:
+    image: alpine:3.20
+    container_name: helmix-jwt-keys
+    command: >
+      sh -c "apk add --no-cache openssl >/dev/null &&
+      sh /workspace/scripts/generate-jwt-keys.sh /workspace/certs"
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./certs:/workspace/certs
+
   postgres:
     image: postgres:16
     container_name: helmix-postgres
@@ -75,6 +85,139 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+
+  auth-service:
+    image: golang:1.23
+    container_name: helmix-auth-service
+    working_dir: /workspace
+    command: go run ./services/auth-service/cmd/auth-service
+    environment:
+      PORT: 8081
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-local-dev-client-id}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-local-dev-client-secret}
+      GITHUB_REDIRECT_URL: ${GITHUB_REDIRECT_URL:-http://localhost:8080/api/v1/auth/github/callback}
+      GITHUB_TOKEN_ENCRYPTION_KEY: ${GITHUB_TOKEN_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef}
+      JWT_PRIVATE_KEY_PATH: /workspace/certs/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /workspace/certs/jwt-public.pem
+      DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      COOKIE_SECURE: "false"
+      REFRESH_TOKEN_COOKIE_NAME: helmix_refresh_token
+      OAUTH_STATE_COOKIE_NAME: helmix_oauth_state
+    depends_on:
+      jwt-keys:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8081:8081"
+
+  repo-analyzer:
+    image: golang:1.23
+    container_name: helmix-repo-analyzer
+    working_dir: /workspace
+    command: go run ./services/repo-analyzer/cmd/repo-analyzer
+    environment:
+      PORT: 8082
+      DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
+      NATS_URL: nats://nats:4222
+      INCIDENT_AI_CLASSIFY_URL: http://incident-ai:8087/classify
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8082:8082"
+
+  infra-generator:
+    image: golang:1.23
+    container_name: helmix-infra-generator
+    working_dir: /workspace
+    command: go run ./services/infra-generator/cmd/infra-generator
+    environment:
+      PORT: 8083
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8083:8083"
+
+  pipeline-generator:
+    image: golang:1.23
+    container_name: helmix-pipeline-generator
+    working_dir: /workspace
+    command: go run ./services/pipeline-generator/cmd/pipeline-generator
+    environment:
+      PORT: 8084
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8084:8084"
+
+  deployment-engine:
+    image: golang:1.23
+    container_name: helmix-deployment-engine
+    working_dir: /workspace
+    command: go run ./services/deployment-engine/cmd/deployment-engine
+    environment:
+      PORT: 8085
+      DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
+      NATS_URL: nats://nats:4222
+      DEPLOY_TIMEOUT_SECONDS: 30
+      DEPLOY_DEFAULT_READY_SECONDS: 1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8085:8085"
+
+  api-gateway:
+    image: golang:1.23
+    container_name: helmix-api-gateway
+    working_dir: /workspace
+    command: go run ./services/api-gateway/cmd/api-gateway
+    environment:
+      PORT: 8080
+      JWT_PUBLIC_KEY_PATH: /workspace/certs/jwt-public.pem
+      REDIS_URL: redis://redis:6379/1
+      AUTH_SERVICE_URL: http://auth-service:8081
+      REPO_ANALYZER_SERVICE_URL: http://repo-analyzer:8082
+      INFRA_GENERATOR_SERVICE_URL: http://infra-generator:8083
+      PIPELINE_GENERATOR_SERVICE_URL: http://pipeline-generator:8084
+      DEPLOYMENT_ENGINE_SERVICE_URL: http://deployment-engine:8085
+      OBSERVABILITY_SERVICE_URL: http://observability:8086
+      INCIDENT_AI_SERVICE_URL: http://incident-ai:8087
+      WS_UPSTREAM_URL: http://observability:8086
+    depends_on:
+      jwt-keys:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      repo-analyzer:
+        condition: service_started
+      infra-generator:
+        condition: service_started
+      pipeline-generator:
+        condition: service_started
+      deployment-engine:
+        condition: service_started
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8080:8080"
 
 volumes:
   postgres-data:

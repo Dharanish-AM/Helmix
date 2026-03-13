@@ -1,36 +1,28 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	"github.com/your-org/helmix/services/pipeline-generator/internal/config"
+	"github.com/your-org/helmix/services/pipeline-generator/internal/server"
 )
 
-type healthResponse struct {
-	Status  string `json:"status"`
-	Service string `json:"service"`
-	Version string `json:"version"`
-}
-
 func main() {
-	serviceName := "pipeline-generator"
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	cfg := config.Load()
+	pipelineServer := server.New(logger)
+	httpServer := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           pipelineServer.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResponse{
-			Status:  "ok",
-			Service: serviceName,
-			Version: "0.1.0",
-		})
-	})
-
-	log.Println(serviceName + " listening on :" + port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	logger.Info("pipeline-generator listening", slog.String("addr", httpServer.Addr))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("server failed: " + err.Error())
 	}
 }

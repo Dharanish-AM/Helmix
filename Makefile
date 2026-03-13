@@ -5,7 +5,7 @@ MIGRATE_DATABASE_URL ?= postgres://helmix:helmix@postgres:5432/helmix?sslmode=di
 POSTGRES_BOOTSTRAP_USER ?= helmix
 POSTGRES_BOOTSTRAP_DB ?= helmix
 
-.PHONY: dev build test test-e2e lint migrate migrate-down ensure-postgres-bootstrap wait-postgres logs clean
+.PHONY: dev build test test-e2e test-e2e-phase1 test-e2e-phase2-infra test-e2e-phase2-pipeline test-e2e-phase2-deploy test-e2e-phase2-flow lint migrate migrate-down ensure-postgres-bootstrap wait-postgres jwt-keys logs clean
 
 dev:
 	@docker compose up --watch || (echo "compose watch unavailable, starting stack in detached mode" && docker compose up -d)
@@ -20,6 +20,90 @@ test:
 
 test-e2e:
 	go test ./tests/e2e/...
+
+test-e2e-phase1:
+	@docker compose up -d postgres redis nats jwt-keys auth-service repo-analyzer api-gateway
+	@NETWORK_NAME="$$(docker inspect -f '{{range $$k, $$v := .NetworkSettings.Networks}}{{$$k}}{{end}}' $(POSTGRES_CONTAINER))"; \
+	if [ -z "$$NETWORK_NAME" ]; then \
+		echo "could not determine docker network for $(POSTGRES_CONTAINER)"; \
+		exit 1; \
+	fi; \
+	docker run --rm \
+		--network "$$NETWORK_NAME" \
+		-v "$(PWD):/workspace" \
+		-w /workspace/tests/e2e \
+		-e E2E_DATABASE_URL="postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable" \
+		-e E2E_API_BASE_URL="http://api-gateway:8080" \
+		-e E2E_NATS_URL="nats://nats:4222" \
+		-e E2E_JWT_PRIVATE_KEY_PATH="/workspace/certs/jwt-private.pem" \
+		golang:1.23 \
+		go test . -run TestPhase1AnalyzeViaGatewayPublishesEvent -count=1 -v
+
+test-e2e-phase2-infra:
+	@docker compose up -d postgres redis nats jwt-keys auth-service repo-analyzer infra-generator api-gateway
+	@NETWORK_NAME="$$(docker inspect -f '{{range $$k, $$v := .NetworkSettings.Networks}}{{$$k}}{{end}}' $(POSTGRES_CONTAINER))"; \
+	if [ -z "$$NETWORK_NAME" ]; then \
+		echo "could not determine docker network for $(POSTGRES_CONTAINER)"; \
+		exit 1; \
+	fi; \
+	docker run --rm \
+		--network "$$NETWORK_NAME" \
+		-v "$(PWD):/workspace" \
+		-w /workspace/tests/e2e \
+		-e E2E_API_BASE_URL="http://api-gateway:8080" \
+		-e E2E_JWT_PRIVATE_KEY_PATH="/workspace/certs/jwt-private.pem" \
+		golang:1.23 \
+		go test . -run TestPhase2GatewayInfraGenerateAuthorized -count=1 -v
+
+test-e2e-phase2-pipeline:
+	@docker compose up -d postgres redis nats jwt-keys auth-service repo-analyzer infra-generator pipeline-generator api-gateway
+	@NETWORK_NAME="$$(docker inspect -f '{{range $$k, $$v := .NetworkSettings.Networks}}{{$$k}}{{end}}' $(POSTGRES_CONTAINER))"; \
+	if [ -z "$$NETWORK_NAME" ]; then \
+		echo "could not determine docker network for $(POSTGRES_CONTAINER)"; \
+		exit 1; \
+	fi; \
+	docker run --rm \
+		--network "$$NETWORK_NAME" \
+		-v "$(PWD):/workspace" \
+		-w /workspace/tests/e2e \
+		-e E2E_API_BASE_URL="http://api-gateway:8080" \
+		-e E2E_JWT_PRIVATE_KEY_PATH="/workspace/certs/jwt-private.pem" \
+		golang:1.23 \
+		go test . -run TestPhase2GatewayPipelineGenerateAuthorized -count=1 -v
+
+test-e2e-phase2-deploy:
+	@docker compose up -d postgres redis nats jwt-keys auth-service repo-analyzer infra-generator pipeline-generator deployment-engine api-gateway
+	@NETWORK_NAME="$$(docker inspect -f '{{range $$k, $$v := .NetworkSettings.Networks}}{{$$k}}{{end}}' $(POSTGRES_CONTAINER))"; \
+	if [ -z "$$NETWORK_NAME" ]; then \
+		echo "could not determine docker network for $(POSTGRES_CONTAINER)"; \
+		exit 1; \
+	fi; \
+	docker run --rm \
+		--network "$$NETWORK_NAME" \
+		-v "$(PWD):/workspace" \
+		-w /workspace/tests/e2e \
+		-e E2E_DATABASE_URL="postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable" \
+		-e E2E_API_BASE_URL="http://api-gateway:8080" \
+		-e E2E_JWT_PRIVATE_KEY_PATH="/workspace/certs/jwt-private.pem" \
+		golang:1.23 \
+		go test . -run TestPhase2GatewayDeploymentRollbackAuthorized -count=1 -v
+
+test-e2e-phase2-flow:
+	@docker compose up -d postgres redis nats jwt-keys auth-service repo-analyzer infra-generator pipeline-generator deployment-engine api-gateway
+	@NETWORK_NAME="$$(docker inspect -f '{{range $$k, $$v := .NetworkSettings.Networks}}{{$$k}}{{end}}' $(POSTGRES_CONTAINER))"; \
+	if [ -z "$$NETWORK_NAME" ]; then \
+		echo "could not determine docker network for $(POSTGRES_CONTAINER)"; \
+		exit 1; \
+	fi; \
+	docker run --rm \
+		--network "$$NETWORK_NAME" \
+		-v "$(PWD):/workspace" \
+		-w /workspace/tests/e2e \
+		-e E2E_DATABASE_URL="postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable" \
+		-e E2E_API_BASE_URL="http://api-gateway:8080" \
+		-e E2E_JWT_PRIVATE_KEY_PATH="/workspace/certs/jwt-private.pem" \
+		golang:1.23 \
+		go test . -run TestPhase2AnalyzeInfraPipelineDeployFlow -count=1 -v
 
 lint:
 	golangci-lint run ./...
@@ -80,6 +164,9 @@ wait-postgres:
 	done; \
 	echo "postgres did not become ready for helmix role in time"; \
 	exit 1
+
+jwt-keys:
+	@./scripts/generate-jwt-keys.sh ./certs
 
 logs:
 	@if [ -z "$(service)" ]; then echo "Usage: make logs service=<name>"; exit 1; fi

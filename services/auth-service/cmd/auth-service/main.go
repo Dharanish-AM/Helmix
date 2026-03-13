@@ -1,36 +1,60 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	"github.com/your-org/helmix/services/auth-service/internal/config"
+	githubclient "github.com/your-org/helmix/services/auth-service/internal/github"
+	"github.com/your-org/helmix/services/auth-service/internal/server"
+	"github.com/your-org/helmix/services/auth-service/internal/session"
+	"github.com/your-org/helmix/services/auth-service/internal/store"
 )
 
-type healthResponse struct {
-	Status  string `json:"status"`
-	Service string `json:"service"`
-	Version string `json:"version"`
-}
-
 func main() {
-	serviceName := "auth-service"
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	config, err := config.Load()
+	if err != nil {
+		logger.Error("load config", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResponse{
-			Status:  "ok",
-			Service: serviceName,
-			Version: "0.1.0",
-		})
-	})
+	databaseStore, err := store.Open(config.DatabaseURL)
+	if err != nil {
+		logger.Error("open database", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer databaseStore.Close()
 
-	log.Println(serviceName + " listening on :" + port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	sessionStore, err := session.New(config.RedisURL, config.RefreshTTL)
+	if err != nil {
+		logger.Error("open redis", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer sessionStore.Close()
+
+	githubAPI := githubclient.New(
+		&http.Client{Timeout: config.HTTPClientTimeout},
+		config.GitHubOAuthBaseURL,
+		config.GitHubAPIBaseURL,
+		config.GitHubClientID,
+		config.GitHubClientSecret,
+		config.GitHubRedirectURL,
+	)
+
+	handler := server.New(config, logger, githubAPI, databaseStore, sessionStore)
+	httpServer := &http.Server{
+		Addr:              ":" + config.Port,
+		Handler:           handler.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	logger.Info("auth-service listening", slog.String("addr", httpServer.Addr))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("server failed: " + err.Error())
 	}
 }

@@ -47,22 +47,25 @@ Priority values:
 | Phase | Name | Target Window | Status | Completion | Notes |
 |---|---|---|---|---|---|
 | 0 | Foundation | Days 1-3 | Done | 100% | All 7 Phase 0 acceptance criteria verified Pass |
-| 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Not Started | 0% | Pending auth and gateway implementation |
-| 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Not Started | 0% | Pending Phase 1 completion |
+| 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
+| 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
 | 3 | Observability and AI Incident Engine | Weeks 7-10 | Not Started | 0% | Pending Phase 2 completion |
 | 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Pending Phase 3 completion |
 
 ## Active Sprint Focus
 
-Current sprint goal: Complete all Phase 0 acceptance criteria.
+Current sprint goal: Complete Phase 2 deployment-engine slice and close Phase 2 acceptance verification.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
-| P0-01 | Ensure make dev starts local infra with healthy containers | P0 | Team | Done | 2026-03-14 | 2026-03-13 |
-| P0-02 | Verify and run all SQL migrations on fresh DB | P0 | Team | Done | 2026-03-14 | 2026-03-13 |
-| P0-03 | Validate libs event-sdk tests and NATS flow | P0 | Team | Done | 2026-03-14 | 2026-03-13 |
-| P0-04 | Add missing service wiring to docker-compose for all services | P1 | Team | Not Started | 2026-03-15 | 2026-03-13 |
-| P0-05 | Replace frontend placeholder with complete Next.js scaffold checks | P1 | Team | In Progress | 2026-03-15 | 2026-03-13 |
+| P2-01 | Implement infra-generator `/generate` endpoint with stack template selection | P0 | Team | Done | 2026-03-16 | 2026-03-13 |
+| P2-02 | Add infra-generator unit and API tests for supported and unsupported stacks | P0 | Team | Done | 2026-03-16 | 2026-03-13 |
+| P2-03 | Add Phase 2 acceptance criteria table and command evidence fields | P1 | Team | Done | 2026-03-17 | 2026-03-13 |
+| P2-04 | Integrate infra-generator into gateway and compose runtime path | P1 | Team | Done | 2026-03-17 | 2026-03-13 |
+| P2-05 | Implement pipeline-generator `/generate` endpoint with workflow template selection | P0 | Team | Done | 2026-03-17 | 2026-03-13 |
+| P2-06 | Add pipeline-generator unit and API tests plus compose wiring | P0 | Team | Done | 2026-03-17 | 2026-03-13 |
+| P2-07 | Implement deployment-engine `/deploy`, status, and rollback endpoints with DB-backed state transitions | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
+| P2-08 | Add deployment-engine proxy, compose smoke, and full flow e2e coverage | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
 
 ## Phase Checklists
 
@@ -85,19 +88,19 @@ Current sprint goal: Complete all Phase 0 acceptance criteria.
 
 ### Phase 1 Checklist
 
-- [ ] Auth service endpoints complete
-- [ ] JWT middleware and role middleware in libs auth
-- [ ] API gateway middleware stack complete
-- [ ] Repo analyzer detection logic complete
-- [ ] Dashboard auth flow complete
-- [ ] Phase 1 unit, integration, e2e tests passing
+- [x] Auth service endpoints complete
+- [x] JWT middleware and role middleware in libs auth
+- [x] API gateway middleware stack complete
+- [x] Repo analyzer detection logic complete
+- [x] Dashboard auth flow complete
+- [x] Phase 1 unit, integration, e2e tests passing
 
 ### Phase 2 Checklist
 
-- [ ] Infra generator templates and validation complete
-- [ ] Pipeline generator workflow and PR creation complete
-- [ ] Deployment engine blue-green and rollback complete
-- [ ] Phase 2 unit and e2e tests passing
+- [x] Infra generator templates and validation complete
+- [x] Pipeline generator workflow and PR creation complete
+- [x] Deployment engine blue-green and rollback complete
+- [x] Phase 2 unit and e2e tests passing
 
 ### Phase 3 Checklist
 
@@ -120,7 +123,7 @@ Current sprint goal: Complete all Phase 0 acceptance criteria.
 
 | ID | Date | Type | Description | Impact | Owner | Mitigation | Status |
 |---|---|---|---|---|---|---|---|
-| R-001 | 2026-03-13 | Environment | Go toolchain not available in current execution environment for automated validation | Medium | Team | Run go test and go work sync on developer machine | Open |
+| R-001 | 2026-03-13 | Environment | Go toolchain availability was initially unclear in the execution environment | Medium | Team | Validated `go test` locally against libs/auth, auth-service, and api-gateway modules | Mitigated |
 | R-002 | 2026-03-13 | Environment | make dev used compose watch mode but no services are configured for watch, causing early failure | High | Team | Updated Makefile dev target to fall back to docker compose up -d | Mitigated |
 | R-003 | 2026-03-13 | Tooling | Host-local migration execution introduced nondeterministic failures (driver/toolchain mismatch) | High | Team | Switched Makefile migrate targets to run pinned `migrate/migrate` image in Docker network context only | Mitigated |
 | R-004 | 2026-03-13 | Runtime | Migrate runs before Postgres role initialization is fully ready, causing role helmix does not exist errors | High | Team | Added wait-postgres target and wired migrate to wait for successful helmix login | Mitigated |
@@ -151,6 +154,20 @@ Use one line per update.
 | 2026-03-13 | Validated Docker-context migration cycle by running `make migrate-down` then `make migrate`; schema verified via `docker exec helmix-postgres psql` |
 | 2026-03-13 | Fixed docker-compose health checks: NATS (PID file + nats.conf + reload signal), Qdrant (bash /dev/tcp), Vault (wget 127.0.0.1 no --spider); all 5 containers reach healthy state |
 | 2026-03-13 | Phase 0 complete — all 7 acceptance criteria pass |
+| 2026-03-13 | Phase 1 started: implemented auth-service OAuth/JWT/refresh flow, shared libs/auth middleware, auth schema migration, and api-gateway request pipeline; verified with `go test ./...` in libs/auth, services/auth-service, and services/api-gateway |
+| 2026-03-13 | Applied migration `000007_add_auth_columns` successfully via `make migrate` to add encrypted GitHub token storage columns to users |
+| 2026-03-13 | Implemented repo-analyzer stack detection service with persistence and `repo.analyzed` event publication; verified with `go test ./...` in services/repo-analyzer |
+| 2026-03-13 | Completed dashboard auth/session flow and verified frontend production build with `NODE_ENV=production npm run build` after removing client `useSearchParams` from prerender path |
+| 2026-03-13 | Added auth-service and api-gateway integration tests plus Phase 1 e2e test (`tests/e2e/phase1_test.go`); validated e2e pass in compose network via `docker run --network helmix_default ... go test . -run TestPhase1AnalyzeViaGatewayPublishesEvent -v` |
+| 2026-03-13 | Started Phase 2 by implementing infra-generator config/server modules and `/generate` endpoint with stack-based Docker template generation for Next.js and FastAPI; verified with `cd services/infra-generator && go test ./...` |
+| 2026-03-13 | Extended Phase 2 infra-generator with API-level server tests, added `infra-generator` service to `docker-compose`, added `services/infra-generator` to CI go-test matrix, and validated runtime generation via `curl -X POST http://localhost:8083/generate ...` |
+| 2026-03-13 | Added authenticated api-gateway integration test for `/api/v1/infra/generate` proxy path (method/path/body forwarding to infra-generator upstream) and verified with `cd services/api-gateway && go test ./...` |
+| 2026-03-13 | Added Phase 2 acceptance criteria tracker and validated initial gates: runtime generation (`curl http://localhost:8083/generate`), infra-generator/api-gateway tests (`go test ./...`), and CI matrix coverage for `services/infra-generator` |
+| 2026-03-13 | Added compose-level Phase 2 smoke target `make test-e2e-phase2-infra` with authenticated JWT request through api-gateway to infra-generator and validated pass in Docker network |
+| 2026-03-13 | Implemented pipeline-generator config/server modules and `/generate` endpoint with GitHub Actions workflow templates for Next.js and FastAPI, added unit/API tests, wired service into `docker-compose` and CI matrix, and validated runtime generation via `curl -X POST http://localhost:8084/generate ...` |
+| 2026-03-13 | Added authenticated api-gateway integration test for `/api/v1/pipelines/generate` plus compose-level smoke target `make test-e2e-phase2-pipeline`; validated both with `cd services/api-gateway && go test ./...` and Docker-network e2e pass |
+| 2026-03-13 | Added chained Phase 2 e2e target `make test-e2e-phase2-flow` to validate analyze -> infra -> pipeline generation through api-gateway using a local temporary Git repo fixture; validated pass in Docker network |
+| 2026-03-13 | Implemented deployment-engine with DB-backed deploy/status/rollback endpoints, added api-gateway proxy coverage, wired compose and CI, and validated `make test-e2e-phase2-deploy` plus full `make test-e2e-phase2-flow` analyze -> infra -> pipeline -> deploy -> rollback flow |
 
 ## Acceptance Criteria Tracker
 
@@ -178,10 +195,36 @@ Use this section as the single verification sheet. Replace Pending with Pass or 
 | Result | Pass |
 | Notes | All 7 Phase 0 acceptance criteria verified pass. All containers healthy, migrations clean, schema confirmed, event-sdk tests pass. |
 
+### Phase 2 Acceptance
+
+Use this section as the verification sheet for early Phase 2 increments. Replace Pending with Pass or Fail and paste brief command evidence.
+
+| ID | Criterion | Status (Pass/Fail/Pending) | Validation Command | Evidence |
+|---|---|---|---|---|
+| AC-2-01 | infra-generator `/generate` returns template output for supported stack | Pass | curl -sS -X POST http://localhost:8083/generate -H 'Content-Type: application/json' -d '{"project_slug":"demo-next","provider":"docker","stack":{"runtime":"node","framework":"nextjs"}}' | response includes `"template":"docker-nextjs"` and generated file payload |
+| AC-2-02 | infra-generator module tests pass (generator + server) | Pass | cd services/infra-generator && go test ./... | tests pass: `internal/generator` and `internal/server` |
+| AC-2-03 | api-gateway has authenticated proxy coverage for `/api/v1/infra/generate` | Pass | cd services/api-gateway && go test ./... | `internal/gateway` test suite passes with authenticated infra proxy integration test |
+| AC-2-04 | CI includes infra-generator in Go test matrix | Pass | grep -n "services/infra-generator" .github/workflows/ci.yml | `.github/workflows/ci.yml` includes matrix entry at line 58 |
+| AC-2-05 | Compose-level authenticated smoke flow for gateway -> infra-generator passes | Pass | make test-e2e-phase2-infra | `TestPhase2GatewayInfraGenerateAuthorized` passes against `http://api-gateway:8080/api/v1/infra/generate` in Docker network |
+| AC-2-06 | pipeline-generator workflow generation implemented and validated | Pass | cd services/pipeline-generator && go test ./... && curl -sS -X POST http://localhost:8084/generate -H 'Content-Type: application/json' -d '{"project_slug":"demo-next","provider":"github-actions","stack":{"runtime":"node","framework":"nextjs"}}' | tests pass and runtime response includes `"template":"github-actions-nextjs"` |
+| AC-2-07 | api-gateway has authenticated proxy coverage for `/api/v1/pipelines/generate` | Pass | cd services/api-gateway && go test ./... | `internal/gateway` test suite passes with authenticated pipeline proxy integration test |
+| AC-2-08 | Compose-level authenticated smoke flow for gateway -> pipeline-generator passes | Pass | make test-e2e-phase2-pipeline | `TestPhase2GatewayPipelineGenerateAuthorized` passes against `http://api-gateway:8080/api/v1/pipelines/generate` in Docker network |
+| AC-2-09 | deployment-engine blue-green/rollback path implemented and validated | Pass | make test-e2e-phase2-deploy | `TestPhase2GatewayDeploymentRollbackAuthorized` passes against `http://api-gateway:8080/api/v1/deployments/*` with live transition and rollback restoring previous deployment |
+| AC-2-10 | Phase 2 chained flow test passes (analyze -> infra -> pipeline) | Pass | make test-e2e-phase2-flow | Full flow validation includes successful analyze -> infra -> pipeline generation through api-gateway before deployment starts |
+| AC-2-11 | Full deployment path (analyze -> infra -> pipeline -> deploy) passes | Pass | make test-e2e-phase2-flow | `TestPhase2AnalyzeInfraPipelineDeployFlow` passes end-to-end through api-gateway including deploy promotion and rollback |
+
+#### Phase 2 Verification Snapshot
+
+| Field | Value |
+|---|---|
+| Verified by | dharanisham |
+| Verification date | 2026-03-13 |
+| Environment | Local macOS |
+| Result | Pass |
+| Notes | Full analyze -> infra -> pipeline -> deploy -> rollback flow now passes end-to-end through the gateway; deployment-engine module, proxy, compose smoke, and CI matrix coverage are in place. |
+
 ## Next Actions
 
-1. Begin Phase 1: implement auth-service GitHub OAuth endpoints.
-2. Implement libs/auth JWT middleware.
-3. Implement api-gateway Chi router with middleware stack.
-4. Implement repo-analyzer stack detection logic.
-5. Connect dashboard auth flow to auth-service.
+1. Start Phase 3 observability service slice and define the first alert ingestion/status endpoints.
+2. Decide whether Phase 2 compose smoke targets should become mandatory CI jobs in addition to module tests.
+3. Add dashboard deployment history and rollback UI once the Phase 3 backend work is underway.

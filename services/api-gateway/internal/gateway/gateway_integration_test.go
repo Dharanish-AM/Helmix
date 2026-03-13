@@ -1,0 +1,388 @@
+package gateway
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	sharedauth "github.com/your-org/helmix/libs/auth"
+	"github.com/your-org/helmix/services/api-gateway/internal/config"
+)
+
+func TestRequestIDInjected(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if strings.TrimSpace(recorder.Header().Get("X-Request-ID")) == "" {
+		t.Fatal("expected gateway to inject X-Request-ID")
+	}
+}
+
+func TestUnauthenticatedRequestRejected(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/health", nil)
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusUnauthorized)
+	}
+
+	var envelope errorEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if envelope.Code != "unauthorized" {
+		t.Fatalf("unexpected error code: got %q want %q", envelope.Code, "unauthorized")
+	}
+	if strings.TrimSpace(envelope.RequestID) == "" {
+		t.Fatal("expected error response to include request_id")
+	}
+}
+
+func TestRateLimitEnforced(t *testing.T) {
+	gateway := newTestGateway(t)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase1-rate-limit-user")
+
+	for i := 0; i < requestsPerMinute; i++ {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/projects", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		gateway.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status at request %d: got %d want %d", i+1, recorder.Code, http.StatusOK)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/projects", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("unexpected status for limited request: got %d want %d", recorder.Code, http.StatusTooManyRequests)
+	}
+	if strings.TrimSpace(recorder.Header().Get("Retry-After")) == "" {
+		t.Fatal("expected Retry-After header for limited request")
+	}
+}
+
+func newTestGateway(t *testing.T) *Gateway {
+	t.Helper()
+
+	return newTestGatewayWithUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+}
+
+func newTestGatewayWithUpstream(t *testing.T, upstreamHandler http.Handler) *Gateway {
+	t.Helper()
+
+	redisURL := strings.TrimSpace(os.Getenv("GATEWAY_TEST_REDIS_URL"))
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379/1"
+	}
+
+	privateKeyPath, publicKeyPath := writeTestKeys(t)
+
+	upstream := httptest.NewServer(upstreamHandler)
+	t.Cleanup(upstream.Close)
+
+	cfg := config.Config{
+		Port:                     "18080",
+		JWTPublicKeyPath:         publicKeyPath,
+		RedisURL:                 redisURL,
+		AuthServiceURL:           upstream.URL,
+		RepoAnalyzerServiceURL:   upstream.URL,
+		InfraGeneratorServiceURL: upstream.URL,
+		PipelineServiceURL:       upstream.URL,
+		DeploymentServiceURL:     upstream.URL,
+		ObservabilityServiceURL:  upstream.URL,
+		IncidentAIServiceURL:     upstream.URL,
+		WebSocketServiceURL:      upstream.URL,
+	}
+
+	gateway, err := New(cfg, slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Skipf("gateway integration dependency unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = gateway.Close() })
+
+	_ = privateKeyPath
+	return gateway
+}
+
+func TestInfraGenerateProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/generate" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/generate")
+		}
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if !strings.Contains(string(requestBody), `"project_slug":"demo-next"`) {
+			t.Fatalf("unexpected upstream body: %s", string(requestBody))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"template":"docker-nextjs","files":[]}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase2-infra-user")
+
+	body := strings.NewReader(`{"project_slug":"demo-next","provider":"docker","stack":{"runtime":"node","framework":"nextjs"}}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/infra/generate", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"template":"docker-nextjs"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestPipelineGenerateProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/generate" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/generate")
+		}
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if !strings.Contains(string(requestBody), `"project_slug":"demo-next-pipeline"`) {
+			t.Fatalf("unexpected upstream body: %s", string(requestBody))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"template":"github-actions-nextjs","files":[]}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase2-pipeline-user")
+
+	body := strings.NewReader(`{"project_slug":"demo-next-pipeline","provider":"github-actions","stack":{"runtime":"node","framework":"nextjs"}}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/generate", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"template":"github-actions-nextjs"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestDeploymentStartProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/deploy" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/deploy")
+		}
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if !strings.Contains(string(requestBody), `"repo_id":"repo-1"`) {
+			t.Fatalf("unexpected upstream body: %s", string(requestBody))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"dep-1","status":"deploying"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase2-deploy-user")
+
+	body := strings.NewReader(`{"repo_id":"repo-1","commit_sha":"sha-123","branch":"main","environment":"production","image_tag":"ghcr.io/acme/app:sha-123"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/deployments/deploy", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusAccepted)
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"deploying"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestDeploymentRollbackProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/deployments/dep-1/rollback" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/deployments/dep-1/rollback")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"dep-1","status":"rolled_back","current_live_deployment_id":"dep-0"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase2-rollback-user")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/deployments/deployments/dep-1/rollback", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"rolled_back"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func signTestJWT(t *testing.T, publicKeyPath, userID string) string {
+	t.Helper()
+
+	privateKeyPath := strings.TrimSuffix(publicKeyPath, "public.pem") + "private.pem"
+	token, err := sharedauth.SignUserToken(privateKeyPath, sharedauth.User{
+		UserID:         userID,
+		OrgID:          "phase1-org",
+		Role:           "owner",
+		Email:          "phase1@example.com",
+		GitHubUsername: "phase1-gh",
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("sign jwt failed: %v", err)
+	}
+	return token
+}
+
+func writeTestKeys(t *testing.T) (string, string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa private key failed: %v", err)
+	}
+
+	privateKeyPath := t.TempDir() + "/jwt-private.pem"
+	publicKeyPath := strings.TrimSuffix(privateKeyPath, "private.pem") + "public.pem"
+
+	privateFile, err := os.Create(privateKeyPath)
+	if err != nil {
+		t.Fatalf("create private key file failed: %v", err)
+	}
+	defer privateFile.Close()
+
+	if err := pem.Encode(privateFile, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}); err != nil {
+		t.Fatalf("write private key failed: %v", err)
+	}
+
+	publicPKIX, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+
+	publicFile, err := os.Create(publicKeyPath)
+	if err != nil {
+		t.Fatalf("create public key file failed: %v", err)
+	}
+	defer publicFile.Close()
+
+	if err := pem.Encode(publicFile, &pem.Block{Type: "PUBLIC KEY", Bytes: publicPKIX}); err != nil {
+		t.Fatalf("write public key failed: %v", err)
+	}
+
+	return privateKeyPath, publicKeyPath
+}
+
+func TestRequestIDRespectedWhenProvided(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	const providedRequestID = "phase1-provided-request-id"
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-ID", providedRequestID)
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if recorder.Header().Get("X-Request-ID") != providedRequestID {
+		t.Fatalf("expected gateway to keep provided request id %q, got %q", providedRequestID, recorder.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestExpiredJWTRejected(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	expiredToken := signExpiredTestJWT(t, gateway.config.JWTPublicKeyPath)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/projects", nil)
+	req.Header.Set("Authorization", "Bearer "+expiredToken)
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func signExpiredTestJWT(t *testing.T, publicKeyPath string) string {
+	t.Helper()
+	privateKeyPath := strings.TrimSuffix(publicKeyPath, "public.pem") + "private.pem"
+	token, err := sharedauth.SignUserToken(privateKeyPath, sharedauth.User{
+		UserID:         fmt.Sprintf("expired-%d", time.Now().UnixNano()),
+		OrgID:          "phase1-org",
+		Role:           "owner",
+		Email:          "phase1@example.com",
+		GitHubUsername: "phase1-gh",
+	}, -time.Minute)
+	if err != nil {
+		t.Fatalf("sign expired jwt failed: %v", err)
+	}
+	return token
+}

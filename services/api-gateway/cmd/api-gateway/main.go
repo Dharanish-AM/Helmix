@@ -1,36 +1,40 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	"github.com/your-org/helmix/services/api-gateway/internal/config"
+	"github.com/your-org/helmix/services/api-gateway/internal/gateway"
 )
 
-type healthResponse struct {
-	Status  string `json:"status"`
-	Service string `json:"service"`
-	Version string `json:"version"`
-}
-
 func main() {
-	serviceName := "api-gateway"
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	config, err := config.Load()
+	if err != nil {
+		logger.Error("load config", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResponse{
-			Status:  "ok",
-			Service: serviceName,
-			Version: "0.1.0",
-		})
-	})
+	apiGateway, err := gateway.New(config, logger)
+	if err != nil {
+		logger.Error("build gateway", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer apiGateway.Close()
 
-	log.Println(serviceName + " listening on :" + port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	httpServer := &http.Server{
+		Addr:              ":" + config.Port,
+		Handler:           apiGateway.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	logger.Info("api-gateway listening", slog.String("addr", httpServer.Addr))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("server failed: " + err.Error())
 	}
 }

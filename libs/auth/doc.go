@@ -1,3 +1,3 @@
 package auth
 
-// Package auth contains shared authentication helpers.
+// Package auth contains shared authentication helpers and JWT middleware.

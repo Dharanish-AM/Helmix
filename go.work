@@ -12,4 +12,5 @@ use (
 	./libs/auth
 	./libs/shared-utils
 	./cli/helmix-cli
+	./tests/e2e
 )
