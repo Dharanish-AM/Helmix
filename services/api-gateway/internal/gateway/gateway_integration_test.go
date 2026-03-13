@@ -284,6 +284,168 @@ func TestDeploymentRollbackProxyAuthorized(t *testing.T) {
 	}
 }
 
+func TestDeploymentListProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/deployments" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/deployments")
+		}
+		if !strings.Contains(r.URL.RawQuery, "project_id=project-1") {
+			t.Fatalf("unexpected upstream query: %q", r.URL.RawQuery)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id":"dep-1","status":"live","environment":"production"}]`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase3-deploy-list-user")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/deployments/deployments?project_id=project-1&limit=10", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"id":"dep-1"`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestObservabilitySnapshotsProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/snapshots" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/snapshots")
+		}
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if !strings.Contains(string(requestBody), `"project_id":"project-1"`) {
+			t.Fatalf("unexpected upstream body: %s", string(requestBody))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"snapshot":{"id":"snap-1"},"alerts_fired":[]}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase3-observability-user")
+	body := strings.NewReader(`{"project_id":"project-1","cpu_pct":92,"memory_pct":40,"req_per_sec":10,"error_rate_pct":6,"p99_latency_ms":300,"pod_count":2,"ready_pod_count":2}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/observability/snapshots", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	gateway.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusAccepted)
+	}
+}
+
+func TestObservabilityAlertsProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/alerts/project-1" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/alerts/project-1")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id":"alert-1","status":"open"}]`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase3-alerts-user")
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/observability/alerts/project-1", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	gateway.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestIncidentListProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/projects/project-1" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/projects/project-1")
+		}
+		if !strings.Contains(r.URL.RawQuery, "limit=5") || !strings.Contains(r.URL.RawQuery, "offset=0") {
+			t.Fatalf("unexpected upstream query: %q", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"items":[{"id":"incident-1"}],"total":1,"limit":5,"offset":0}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase3-incidents-user")
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/incidents/projects/project-1?limit=5&offset=0", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	gateway.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+
+	var incidentsPage struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total  int `json:"total"`
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &incidentsPage); err != nil {
+		t.Fatalf("decode incidents response failed: %v", err)
+	}
+	if incidentsPage.Total != 1 || incidentsPage.Limit != 5 || incidentsPage.Offset != 0 {
+		t.Fatalf("unexpected incidents envelope: %+v", incidentsPage)
+	}
+	if len(incidentsPage.Items) != 1 || incidentsPage.Items[0].ID != "incident-1" {
+		t.Fatalf("unexpected incidents items payload: %+v", incidentsPage.Items)
+	}
+}
+
+func TestIncidentActionProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/incident-1/actions" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/incident-1/actions")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"incident_id":"incident-1","status":"accepted"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase3-incident-action-user")
+	body := strings.NewReader(`{"action":"restart_pods","params":{}}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/incident-1/actions", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	gateway.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+}
+
 func signTestJWT(t *testing.T, publicKeyPath, userID string) string {
 	t.Helper()
 

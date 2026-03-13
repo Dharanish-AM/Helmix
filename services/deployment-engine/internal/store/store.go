@@ -83,6 +83,39 @@ func (s *Store) GetDeployment(ctx context.Context, deploymentID string) (Deploym
 	return deployment, nil
 }
 
+// ListDeploymentsByProject returns recent deployments associated with a project.
+func (s *Store) ListDeploymentsByProject(ctx context.Context, projectID string, limit int) ([]Deployment, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	const query = `
+		SELECT d.id, d.repo_id, d.commit_sha, d.branch, d.status, d.environment, d.image_tag, d.deployed_at, d.created_at
+		FROM deployments d
+		JOIN repos r ON r.id = d.repo_id
+		WHERE r.project_id = $1
+		ORDER BY COALESCE(d.deployed_at, d.created_at) DESC, d.created_at DESC
+		LIMIT $2`
+
+	rows, err := s.db.QueryContext(ctx, query, projectID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	deployments := make([]Deployment, 0, limit)
+	for rows.Next() {
+		deployment, scanErr := scanDeployment(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan deployment row: %w", scanErr)
+		}
+		deployments = append(deployments, deployment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deployment rows: %w", err)
+	}
+	return deployments, nil
+}
+
 // LookupProjectID returns the project id for the given repo.
 func (s *Store) LookupProjectID(ctx context.Context, repoID string) (string, error) {
 	const query = `SELECT project_id FROM repos WHERE id = $1`

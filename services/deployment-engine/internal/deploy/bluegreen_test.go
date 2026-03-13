@@ -241,6 +241,22 @@ func (s *fakeStore) GetDeployment(_ context.Context, deploymentID string) (store
 	return deployment, nil
 }
 
+func (s *fakeStore) ListDeploymentsByProject(_ context.Context, projectID string, limit int) ([]store.Deployment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 10
+	}
+	results := make([]store.Deployment, 0, limit)
+	for _, deployment := range s.deployments {
+		if repoProjectID, ok := s.projectIDs[deployment.RepoID]; !ok || repoProjectID != projectID {
+			continue
+		}
+		results = append(results, deployment)
+	}
+	return results, nil
+}
+
 func (s *fakeStore) LookupProjectID(_ context.Context, repoID string) (string, error) {
 	if projectID, ok := s.projectIDs[repoID]; ok {
 		return projectID, nil

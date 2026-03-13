@@ -182,6 +182,68 @@ services:
     ports:
       - "8085:8085"
 
+  observability:
+    image: golang:1.23
+    container_name: helmix-observability
+    working_dir: /workspace
+    command: go run ./services/observability/cmd/observability
+    environment:
+      PORT: 8086
+      METRICS_PORT: 9090
+      DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8086:8086"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "printf '' > /dev/tcp/127.0.0.1/8086"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  incident-ai:
+    image: python:3.12-slim
+    container_name: helmix-incident-ai
+    working_dir: /workspace/services/incident-ai
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt >/tmp/incident-ai-pip.log &&
+      uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8087"
+    environment:
+      PORT: 8087
+      DATABASE_URL: postgres://helmix:helmix@postgres:5432/helmix?sslmode=disable
+      NATS_URL: nats://nats:4222
+      OBSERVABILITY_SERVICE_URL: http://observability:8086
+      DEPLOYMENT_ENGINE_SERVICE_URL: http://deployment-engine:8085
+      HELMIX_LLM_PROVIDER: mock
+      INCIDENT_AI_AUDIT_LOG_PATH: /tmp/incident-ai-audit.log
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      observability:
+        condition: service_healthy
+      deployment-engine:
+        condition: service_started
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8087:8087"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8087/health', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
   api-gateway:
     image: golang:1.23
     container_name: helmix-api-gateway
@@ -214,6 +276,10 @@ services:
         condition: service_started
       deployment-engine:
         condition: service_started
+      observability:
+        condition: service_healthy
+      incident-ai:
+        condition: service_healthy
     volumes:
       - ./:/workspace
     ports:

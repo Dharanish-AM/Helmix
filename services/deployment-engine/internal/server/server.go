@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +19,7 @@ import (
 type Engine interface {
 	StartDeployment(ctx context.Context, orgID string, request deploy.StartRequest) (deploy.DeploymentResponse, error)
 	GetDeployment(ctx context.Context, deploymentID string) (deploy.DeploymentResponse, error)
+	ListDeploymentsByProject(ctx context.Context, projectID string, limit int) ([]deploy.DeploymentResponse, error)
 	RollbackDeployment(ctx context.Context, orgID, deploymentID string) (deploy.DeploymentResponse, error)
 }
 
@@ -45,6 +47,7 @@ func (s *Server) buildRouter() chi.Router {
 	router.Use(s.loggingMiddleware)
 	router.Get("/health", s.handleHealth)
 	router.Post("/deploy", s.handleDeploy)
+	router.Get("/deployments", s.handleListDeployments)
 	router.Get("/deployments/{id}", s.handleGetDeployment)
 	router.Post("/deployments/{id}/rollback", s.handleRollback)
 	return router
@@ -76,6 +79,24 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	response, err := s.engine.GetDeployment(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeEngineError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
+	projectID := r.URL.Query().Get("project_id")
+	limit := 10
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if parsedLimit, err := strconv.Atoi(rawLimit); err == nil {
+			limit = parsedLimit
+		}
+	}
+
+	response, err := s.engine.ListDeploymentsByProject(r.Context(), projectID, limit)
 	if err != nil {
 		s.writeEngineError(w, err)
 		return

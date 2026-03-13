@@ -49,6 +49,7 @@ type DeploymentResponse struct {
 type Store interface {
 	CreateDeployment(ctx context.Context, params store.CreateDeploymentParams) (store.Deployment, error)
 	GetDeployment(ctx context.Context, deploymentID string) (store.Deployment, error)
+	ListDeploymentsByProject(ctx context.Context, projectID string, limit int) ([]store.Deployment, error)
 	LookupProjectID(ctx context.Context, repoID string) (string, error)
 	FindActiveDeployment(ctx context.Context, repoID, environment string) (*store.Deployment, error)
 	FindPreviousDeployment(ctx context.Context, repoID, environment, currentDeploymentID string) (*store.Deployment, error)
@@ -133,6 +134,29 @@ func (s *Service) GetDeployment(ctx context.Context, deploymentID string) (Deplo
 		return DeploymentResponse{}, err
 	}
 	return s.buildResponse(ctx, deployment)
+}
+
+// ListDeploymentsByProject returns recent deployment history for a project.
+func (s *Service) ListDeploymentsByProject(ctx context.Context, projectID string, limit int) ([]DeploymentResponse, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, fmt.Errorf("%w: project_id is required", ErrInvalidRequest)
+	}
+
+	deployments, err := s.store.ListDeploymentsByProject(ctx, projectID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments by project: %w", err)
+	}
+
+	responses := make([]DeploymentResponse, 0, len(deployments))
+	for _, deployment := range deployments {
+		response, buildErr := s.buildResponse(ctx, deployment)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
 }
 
 // RollbackDeployment reactivates the previous deployment and marks the current one rolled back.

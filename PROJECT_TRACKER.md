@@ -49,12 +49,12 @@ Priority values:
 | 0 | Foundation | Days 1-3 | Done | 100% | All 7 Phase 0 acceptance criteria verified Pass |
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
-| 3 | Observability and AI Incident Engine | Weeks 7-10 | Not Started | 0% | Pending Phase 2 completion |
+| 3 | Observability and AI Incident Engine | Weeks 7-10 | In Progress | 80% | Observability latency and zero-pod rule tests expanded; incident-ai deployment context enriched with structured DeploymentContext, concrete per-rule action routing, and 14 Python tests; dashboard incidents and observability pages live |
 | 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Pending Phase 3 completion |
 
 ## Active Sprint Focus
 
-Current sprint goal: Complete Phase 2 deployment-engine slice and close Phase 2 acceptance verification.
+Current sprint goal: Validate the first complete Phase 3 backend loop: observability alert -> incident-ai diagnosis -> manual action event flow.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
@@ -66,6 +66,14 @@ Current sprint goal: Complete Phase 2 deployment-engine slice and close Phase 2 
 | P2-06 | Add pipeline-generator unit and API tests plus compose wiring | P0 | Team | Done | 2026-03-17 | 2026-03-13 |
 | P2-07 | Implement deployment-engine `/deploy`, status, and rollback endpoints with DB-backed state transitions | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
 | P2-08 | Add deployment-engine proxy, compose smoke, and full flow e2e coverage | P0 | Team | Done | 2026-03-18 | 2026-03-13 |
+| P3-01 | Implement observability snapshot ingestion, recent metrics API, and open alerts API | P0 | Team | Done | 2026-03-20 | 2026-03-13 |
+| P3-02 | Add observability rule evaluation, alert deduplication, and alert.fired publication | P0 | Team | Done | 2026-03-20 | 2026-03-13 |
+| P3-03 | Implement incident-ai alert intake, diagnosis persistence, and incident query endpoints | P0 | Team | Done | 2026-03-21 | 2026-03-13 |
+| P3-04 | Add manual incident action path and incident-created smoke validation | P0 | Team | Done | 2026-03-21 | 2026-03-13 |
+| P3-05 | Expand observability latency and zero-pod rule unit and e2e smoke coverage | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
+| P3-06 | Enrich incident-ai deployment history context (DeploymentContext model, minutes_since_deploy) | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
+| P3-07 | Add per-rule concrete manual action routing and restart-without-deployment-id fallback | P0 | Team | Done | 2026-03-22 | 2026-03-13 |
+| P3-08 | Add dashboard /incidents and /observability UI pages and Phase 3 API fetchers in lib/api.ts | P1 | Team | Done | 2026-03-22 | 2026-03-13 |
 
 ## Phase Checklists
 
@@ -168,6 +176,51 @@ Use one line per update.
 | 2026-03-13 | Added authenticated api-gateway integration test for `/api/v1/pipelines/generate` plus compose-level smoke target `make test-e2e-phase2-pipeline`; validated both with `cd services/api-gateway && go test ./...` and Docker-network e2e pass |
 | 2026-03-13 | Added chained Phase 2 e2e target `make test-e2e-phase2-flow` to validate analyze -> infra -> pipeline generation through api-gateway using a local temporary Git repo fixture; validated pass in Docker network |
 | 2026-03-13 | Implemented deployment-engine with DB-backed deploy/status/rollback endpoints, added api-gateway proxy coverage, wired compose and CI, and validated `make test-e2e-phase2-deploy` plus full `make test-e2e-phase2-flow` analyze -> infra -> pipeline -> deploy -> rollback flow |
+| 2026-03-13 | Started Phase 3 observability slice: added metric snapshot migration, observability snapshot ingestion and alert APIs, alert rule evaluation + deduplication + `alert.fired` NATS publication, gateway proxy coverage, and Phase 3 smoke target wiring |
+| 2026-03-13 | Validated Phase 3 observability foundation with `cd services/observability && go test ./...`, `cd services/api-gateway && go test ./...`, and `make test-e2e-phase3-observability`; synthetic error-rate snapshots now produce an open alert and `alert.fired` event through api-gateway |
+| 2026-03-13 | Started incident-ai slice: added FastAPI service scaffold, alert.fired subscription, deterministic diagnosis provider abstraction, incident persistence, manual action API, Python unit tests, compose wiring, and Phase 3 incident smoke target |
+| 2026-03-13 | Validated incident-ai foundation with containerized `pytest tests -q`, `cd services/api-gateway && go test ./...`, and `make test-e2e-phase3-incident`; alert.fired now produces incident.created and manual incident actions publish autoheal.triggered |
+| 2026-03-13 | Expanded observability alerting rules_test.go with 9 new tests covering p99-latency-high (fires/no-fire/gap/exact-threshold/severity) and ready-pods-zero (severity/partial-pods/immediate/value+threshold); all 14 tests pass |
+| 2026-03-13 | Added two new e2e smoke test functions: TestPhase3ObservabilityLatencyAlert (6 high-latency snapshots → alert.fired metric=p99_latency_ms severity=warning) and TestPhase3ObservabilityZeroPodAlert (1 zero-ready-pod snapshot → alert.fired metric=ready_pod_count severity=critical) |
+| 2026-03-13 | Enriched incident-ai context_clients.py with DeploymentContext pydantic model and _parse_deployment parsing started_at into minutes_since_deploy; service._build_prompt now emits structured deployment-history section with recent-deploy warning annotation |
+| 2026-03-13 | Added _RULE_ACTION_SEQUENCES map and recommended_action_sequence() to IncidentService; _execute_action now handles restart_pods/rollback_deployment/scale_pods gracefully without deployment_id (returns accepted); MockProvider now routes by rule/metric keyword |
+| 2026-03-13 | Extended Python test suite to 14 tests: test_deployment_context_in_prompt, test_latency_alert_routing, test_zero_pod_alert_routing, test_recommended_action_sequence_per_rule, test_restart_pods_without_deployment_id_accepted, test_rollback_without_deployment_id_accepted, test_scale_pods_without_deployment_id_accepted; all 14 pass |
+| 2026-03-13 | Created frontend/dashboard/app/dashboard/incidents/page.tsx and app/dashboard/observability/page.tsx; added fetchCurrentMetrics, fetchAlerts, fetchIncidents, triggerIncidentAction to lib/api.ts; production build passes (8/8 static pages) |
+| 2026-03-13 | Aligned dashboard incidents API client with gateway route (`/api/v1/incidents/projects/{project_id}`) and expanded `make test-e2e-phase3-observability` to run all `TestPhase3Observability*` smoke tests (alert flow + latency + zero-pod) |
+| 2026-03-13 | Added quick navigation from dashboard shell to `/dashboard/observability` and `/dashboard/incidents` and cleaned minor incident-ai provider formatting issue; production build remains green |
+| 2026-03-13 | Added deployment-aware incident action controls in dashboard incidents UI: per-incident Deployment ID input is now included in rollback/scale/restart params when provided; production build remains green |
+| 2026-03-13 | Implemented deployment history list endpoint in deployment-engine (`GET /deployments?project_id=&limit=`), added api-gateway proxy test coverage, and upgraded dashboard incidents action control from manual deployment-id input to live deployment picker; validated with `go test` in deployment-engine/api-gateway and production dashboard build |
+| 2026-03-13 | Added explicit Phase 3 gateway route-level e2e coverage for dashboard incident paths: `GET /api/v1/incidents/projects/{project_id}` and `POST /api/v1/incidents/{incident_id}/actions`; broadened `make test-e2e-phase3-incident` to run all `TestPhase3Incident*` tests |
+| 2026-03-13 | Added manual refresh and configurable auto-refresh controls (10s/15s/30s/60s) to dashboard incidents and observability pages with last-refreshed timestamp; production dashboard build and TS diagnostics pass |
+| 2026-03-13 | Added deployment picker filtering controls in dashboard incidents (environment + status) with filtered-count visibility; validated production dashboard build and diagnostics |
+| 2026-03-13 | Added incident detail panel in dashboard incidents with on-demand detail/similar fetch (`/api/v1/incidents/{id}` + `/api/v1/incidents/{id}/similar`) and added per-incident last manual action summary card; production dashboard build and diagnostics pass |
+| 2026-03-13 | Added compact action-status badges (accepted/failed/running) and incidents pagination controls (page size + prev/next + page indicator) to improve live-incident scanning and scale; production dashboard build and diagnostics pass |
+| 2026-03-13 | Added observability->incidents quick-link flow: open-alert CTA + table Investigate action now route to `/dashboard/incidents` with query context (`project_id`, `alert_id`, `alert_rule`, `alert_metric`); incidents page pre-fills project, auto-loads data, and shows triage banner; production dashboard build passes |
+| 2026-03-13 | Implemented server-side incidents pagination contract in incident-ai (`limit`/`offset` + `items/total/limit/offset` response envelope), updated dashboard incidents fetcher/UI to consume backend pagination, and validated with `pytest tests -q`, focused e2e `go test -run TestPhase3IncidentGatewayRoutes`, and production dashboard build |
+| 2026-03-13 | Added deep-link action presets in dashboard incidents: observability alert rule context now preselects per-incident manual action (rule->action map), renders suggested preset banner, and supports one-click `Run Selected`; production dashboard build and diagnostics pass |
+| 2026-03-13 | Added incident-ai pagination regression coverage (`test_list_incidents_returns_paginated_response_contract`) validating repository passthrough and `items/total/limit/offset` response metadata; Python suite now 15 passing tests |
+| 2026-03-13 | Added lightweight frontend smoke test for incidents preset-selection behavior (`suggestedActionForAlertRule`) with Vitest, extracted preset mapping helper module, and validated with `npm run test` plus production dashboard build |
+| 2026-03-13 | Removed transitional legacy-array incidents decoding from route-level Phase 3 e2e, tightened pagination-envelope assertions (`items/total/limit/offset` with explicit `limit=5&offset=0`), and added dedicated incident deep-link rule parsing (`alert_rule` with `rule` alias) plus Vitest coverage |
+| 2026-03-13 | Revalidated strict incidents pagination contract end-to-end via `make test-e2e-phase3-incident` after compose force-recreate; both `TestPhase3IncidentFlow` and `TestPhase3IncidentGatewayRoutes` pass with required `items/total/limit/offset` envelope |
+| 2026-03-13 | Hardened migration startup path for CI/local by starting Postgres before migrate in both Makefile and Phase 1 CI job; validated with local `make migrate` and `make test-e2e-phase1` pass |
+
+### Phase 3 Acceptance
+
+Use this section as the verification sheet for the initial Phase 3 slice. Replace Pending with Pass or Fail and paste brief command evidence.
+
+| ID | Criterion | Status (Pass/Fail/Pending) | Validation Command | Evidence |
+|---|---|---|---|---|
+| AC-3-01 | observability snapshot ingestion persists metrics and exposes current snapshot API | Pass | cd services/observability && go test ./... && make test-e2e-phase3-observability | module tests pass and smoke test reads latest metrics via `/api/v1/observability/metrics/{project_id}/current` |
+| AC-3-02 | alert rules fire and deduplicate open alerts for sustained breaches | Pass | cd services/observability && go test ./... && make test-e2e-phase3-observability | rules tests pass and smoke test injects 4 high error-rate snapshots, producing one open critical alert |
+| AC-3-03 | observability publishes `alert.fired` and is reachable via gateway proxy | Pass | cd services/api-gateway && go test ./... && make test-e2e-phase3-observability | gateway proxy tests pass and smoke test receives `alert.fired` on NATS after posting snapshots through api-gateway |
+| AC-3-04 | incident-ai subscribes to `alert.fired`, persists diagnosis, and publishes `incident.created` | Pass | docker run --rm -v "$PWD:/workspace" -w /workspace/services/incident-ai python:3.12-slim sh -c "pip install --no-cache-dir -r requirements.txt >/tmp/pip.log && pytest tests -q" && make test-e2e-phase3-incident | Python tests pass and smoke test confirms `incident.created` after synthetic alert flow |
+| AC-3-05 | manual incident action path publishes `autoheal.triggered` through gateway | Pass | cd services/api-gateway && go test ./... && make test-e2e-phase3-incident | gateway proxy tests pass and smoke test POST to `/api/v1/incidents/{id}/actions` emits `autoheal.triggered` |
+| AC-3-06 | p99-latency-high rule fires after 6 consecutive high-latency snapshots and not before | Pass | cd services/observability && go test ./internal/alerting/... && make test-e2e-phase3-observability | 14 unit tests pass (TestP99LatencyHighFires, TestP99LatencyHighNoFireFewSnapshots, TestP99LatencyHighNoFireGap, TestP99LatencyHighExactThreshold, TestP99LatencySeverityIsWarning); e2e TestPhase3ObservabilityLatencyAlert passes |
+| AC-3-07 | ready-pods-zero rule fires immediately on a single snapshot with no ready pods | Pass | cd services/observability && go test ./internal/alerting/... && make test-e2e-phase3-observability | 14 unit tests pass (TestZeroPodSeverityIsCritical, TestZeroPodPartialPodsHealthy, TestZeroPodFiresImmediatelyWithoutHistory, TestZeroPodValueAndThresholdInAlert); e2e TestPhase3ObservabilityZeroPodAlert passes |
+| AC-3-08 | incident-ai embeds structured deployment history (deployment_id, image, minutes_since_deploy) in LLM prompt | Pass | /tmp/incident-ai-venv313/bin/pytest tests -v | test_deployment_context_in_prompt passes; dep-99 and image annotation visible in captured prompt |
+| AC-3-09 | per-rule action routing: ready-pods-zero→restart_pods, p99-latency-high→scale_pods, error-rate-high→rollback_deployment | Pass | /tmp/incident-ai-venv313/bin/pytest tests -v | test_recommended_action_sequence_per_rule, test_latency_alert_routing, test_zero_pod_alert_routing all pass |
+| AC-3-10 | dashboard /incidents and /observability pages build and render without errors | Pass | cd frontend/dashboard && NODE_ENV=production npm run build | 8/8 static pages generated; /dashboard/incidents and /dashboard/observability in route table |
+| AC-3-11 | incident-ai dashboard routes are validated through api-gateway (`GET /api/v1/incidents/projects/{project_id}` + `POST /api/v1/incidents/{id}/actions`) | Pass | make test-e2e-phase3-incident | `TestPhase3IncidentFlow` and `TestPhase3IncidentGatewayRoutes` both pass through compose/api-gateway path |
 
 ## Acceptance Criteria Tracker
 
@@ -225,6 +278,6 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 
 ## Next Actions
 
-1. Start Phase 3 observability service slice and define the first alert ingestion/status endpoints.
-2. Decide whether Phase 2 compose smoke targets should become mandatory CI jobs in addition to module tests.
-3. Add dashboard deployment history and rollback UI once the Phase 3 backend work is underway.
+1. Add an incidents deep-link smoke test that opens `/dashboard/incidents?project_id=...&alert_rule=...` and verifies suggested action preset rendering.
+2. Expand gateway integration assertions for incidents list to validate response JSON shape end-to-end (not only proxy passthrough).
+3. Run compose-level `make test-e2e-phase3-incident` in CI after incident-ai image refresh to enforce pagination-envelope contract across environments.

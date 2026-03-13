@@ -73,6 +73,29 @@ func TestGetDeploymentNotFoundReturns404(t *testing.T) {
 	}
 }
 
+func TestListDeploymentsByProjectReturnsOK(t *testing.T) {
+	engine := &fakeEngine{
+		listResponse: []deploy.DeploymentResponse{
+			{ID: "dep-1", Status: "live", RepoID: "repo-1", CreatedAt: time.Now().UTC()},
+		},
+	}
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), engine)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/deployments?project_id=project-1&limit=5", nil)
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if engine.lastProjectID != "project-1" {
+		t.Fatalf("unexpected project id: got %s want %s", engine.lastProjectID, "project-1")
+	}
+	if engine.lastLimit != 5 {
+		t.Fatalf("unexpected limit: got %d want %d", engine.lastLimit, 5)
+	}
+}
+
 func TestRollbackEndpointReturnsConflict(t *testing.T) {
 	engine := &fakeEngine{rollbackErr: deploy.ErrRollbackUnavailable}
 	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), engine)
@@ -89,11 +112,15 @@ func TestRollbackEndpointReturnsConflict(t *testing.T) {
 type fakeEngine struct {
 	startResponse    deploy.DeploymentResponse
 	getResponse      deploy.DeploymentResponse
+	listResponse     []deploy.DeploymentResponse
 	rollbackResponse deploy.DeploymentResponse
 	startErr         error
 	getErr           error
+	listErr          error
 	rollbackErr      error
 	lastOrgID        string
+	lastProjectID    string
+	lastLimit        int
 }
 
 func (f *fakeEngine) StartDeployment(_ context.Context, orgID string, _ deploy.StartRequest) (deploy.DeploymentResponse, error) {
@@ -109,6 +136,18 @@ func (f *fakeEngine) GetDeployment(_ context.Context, _ string) (deploy.Deployme
 		return deploy.DeploymentResponse{ID: "dep-1", Status: "live", CreatedAt: time.Now().UTC()}, nil
 	}
 	return f.getResponse, nil
+}
+
+func (f *fakeEngine) ListDeploymentsByProject(_ context.Context, projectID string, limit int) ([]deploy.DeploymentResponse, error) {
+	f.lastProjectID = projectID
+	f.lastLimit = limit
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if len(f.listResponse) == 0 {
+		return []deploy.DeploymentResponse{}, nil
+	}
+	return f.listResponse, nil
 }
 
 func (f *fakeEngine) RollbackDeployment(_ context.Context, orgID, _ string) (deploy.DeploymentResponse, error) {

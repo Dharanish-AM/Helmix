@@ -1,36 +1,70 @@
 package main
 
 import (
-	"encoding/json"
+	"database/sql"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/your-org/helmix/services/observability/internal/config"
+	"github.com/your-org/helmix/services/observability/internal/observability"
+	"github.com/your-org/helmix/services/observability/internal/server"
+	"github.com/your-org/helmix/services/observability/internal/store"
 )
 
-type healthResponse struct {
-	Status  string `json:"status"`
-	Service string `json:"service"`
-	Version string `json:"version"`
-}
-
 func main() {
-	serviceName := "observability"
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal("load config failed: " + err.Error())
 	}
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(healthResponse{
-			Status:  "ok",
-			Service: serviceName,
-			Version: "0.1.0",
-		})
-	})
+	database, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		log.Fatal("open database failed: " + err.Error())
+	}
+	defer database.Close()
 
-	log.Println(serviceName + " listening on :" + port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := database.Ping(); err != nil {
+		log.Fatal("ping database failed: " + err.Error())
+	}
+
+	observabilityStore := store.New(database)
+	publisher, err := observability.NewPublisher(cfg.NATSURL)
+	if err != nil {
+		log.Fatal("connect publisher failed: " + err.Error())
+	}
+	defer func() { _ = publisher.Close() }()
+
+	service := observability.NewService(logger, observabilityStore, publisher)
+	applicationServer := server.New(logger, service)
+
+	httpServer := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           applicationServer.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	metricsServer := &http.Server{
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           promhttp.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		logger.Info("observability metrics listening", slog.String("addr", metricsServer.Addr))
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("metrics server failed: " + err.Error())
+		}
+	}()
+
+	logger.Info("observability listening", slog.String("addr", httpServer.Addr))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("server failed: " + err.Error())
 	}
 }
