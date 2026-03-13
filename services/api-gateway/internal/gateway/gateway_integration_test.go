@@ -388,7 +388,7 @@ func TestIncidentListProxyAuthorized(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"items":[{"id":"incident-1"}],"total":1,"limit":5,"offset":0}`))
+		_, _ = w.Write([]byte(`{"items":[{"id":"incident-1","project_id":"project-1","alert_id":"alert-1","created_at":"2026-03-13T12:00:00Z","resolved_at":null,"ai_diagnosis":{"root_cause":"high latency after deploy","confidence":0.92,"reasoning":"p99 breached after rollout","recommended_actions":[{"action":"scale_pods","params":{"replicas":3}}],"auto_execute":false},"ai_actions":[]}],"total":1,"limit":5,"offset":0}`))
 	})
 
 	gateway := newTestGatewayWithUpstream(t, upstream)
@@ -403,7 +403,14 @@ func TestIncidentListProxyAuthorized(t *testing.T) {
 
 	var incidentsPage struct {
 		Items []struct {
-			ID string `json:"id"`
+			ID        string `json:"id"`
+			ProjectID string `json:"project_id"`
+			AlertID   string `json:"alert_id"`
+			CreatedAt string `json:"created_at"`
+			Diagnosis struct {
+				RootCause string  `json:"root_cause"`
+				Confidence float64 `json:"confidence"`
+			} `json:"ai_diagnosis"`
 		} `json:"items"`
 		Total  int `json:"total"`
 		Limit  int `json:"limit"`
@@ -417,6 +424,15 @@ func TestIncidentListProxyAuthorized(t *testing.T) {
 	}
 	if len(incidentsPage.Items) != 1 || incidentsPage.Items[0].ID != "incident-1" {
 		t.Fatalf("unexpected incidents items payload: %+v", incidentsPage.Items)
+	}
+	if incidentsPage.Items[0].ProjectID != "project-1" || incidentsPage.Items[0].AlertID != "alert-1" {
+		t.Fatalf("unexpected incidents identifiers payload: %+v", incidentsPage.Items[0])
+	}
+	if incidentsPage.Items[0].CreatedAt == "" {
+		t.Fatalf("expected created_at in incidents payload: %+v", incidentsPage.Items[0])
+	}
+	if incidentsPage.Items[0].Diagnosis.RootCause == "" || incidentsPage.Items[0].Diagnosis.Confidence <= 0 {
+		t.Fatalf("unexpected diagnosis payload: %+v", incidentsPage.Items[0].Diagnosis)
 	}
 }
 

@@ -30,4 +30,26 @@ describe("parseAlertRuleQuery", () => {
     const params = new URLSearchParams("alert_metric=error_rate_pct");
     expect(parseAlertRuleQuery(params)).toBe("");
   });
+
+  it("supports incidents deep-link query and maps preset action", () => {
+    const params = new URLSearchParams(
+      "project_id=proj-123&alert_rule=p99-latency-high&alert_id=alert-1"
+    );
+
+    const alertRule = parseAlertRuleQuery(params);
+    const suggestedAction = suggestedActionForAlertRule(alertRule);
+
+    expect(alertRule).toBe("p99-latency-high");
+    expect(suggestedAction).toBe("scale_pods");
+  });
+
+  it("supports external deep links that use rule alias", () => {
+    const params = new URLSearchParams("project_id=proj-123&rule=ready-pods-zero");
+
+    const alertRule = parseAlertRuleQuery(params);
+    const suggestedAction = suggestedActionForAlertRule(alertRule);
+
+    expect(alertRule).toBe("ready-pods-zero");
+    expect(suggestedAction).toBe("restart_pods");
+  });
 });

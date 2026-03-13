@@ -203,6 +203,12 @@ Use one line per update.
 | 2026-03-13 | Removed transitional legacy-array incidents decoding from route-level Phase 3 e2e, tightened pagination-envelope assertions (`items/total/limit/offset` with explicit `limit=5&offset=0`), and added dedicated incident deep-link rule parsing (`alert_rule` with `rule` alias) plus Vitest coverage |
 | 2026-03-13 | Revalidated strict incidents pagination contract end-to-end via `make test-e2e-phase3-incident` after compose force-recreate; both `TestPhase3IncidentFlow` and `TestPhase3IncidentGatewayRoutes` pass with required `items/total/limit/offset` envelope |
 | 2026-03-13 | Hardened migration startup path for CI/local by starting Postgres before migrate in both Makefile and Phase 1 CI job; validated with local `make migrate` and `make test-e2e-phase1` pass |
+| 2026-03-13 | Completed Next Action 1 by extending incidents deep-link smoke coverage in `frontend/dashboard/app/dashboard/incidents/presets.test.ts` to validate `/dashboard/incidents?project_id=...&alert_rule=...` and `rule` alias mapping to suggested action presets; validated with `cd frontend/dashboard && npm run test` (7/7 pass) |
+| 2026-03-13 | Completed Next Action 2 by expanding api-gateway incidents list integration assertions to validate full response shape fields (`project_id`, `alert_id`, `created_at`, `ai_diagnosis.root_cause`, `ai_diagnosis.confidence`) in `services/api-gateway/internal/gateway/gateway_integration_test.go`; validated with `cd services/api-gateway && go test ./...` |
+| 2026-03-13 | Completed Next Action 3 by adding CI job `phase3-incident-e2e-smoke` in `.github/workflows/ci.yml` (migrate -> refresh `incident-ai` image -> `make test-e2e-phase3-incident`), and locally prevalidated compose flow with `make test-e2e-phase3-incident` pass |
+| 2026-03-13 | Collected local reliability baseline for `make test-e2e-phase3-incident` over 3 consecutive runs after CI wiring: pass/pass/pass with wall times 88.89s, 102.47s, 91.50s (no local flakes observed) |
+| 2026-03-13 | Refined CI Phase 3 incident refresh step from no-op `docker compose build incident-ai` to `docker compose pull incident-ai` (service uses `image: python:3.12-slim`); validated revised sequence with local `docker compose pull incident-ai && make test-e2e-phase3-incident` pass |
+| 2026-03-13 | Added first-run CI observability instrumentation for `phase3-incident-e2e-smoke`: job timeout guard, compose service-state summary, and elapsed runtime summary in `GITHUB_STEP_SUMMARY` to speed flake triage after push/PR |
 
 ### Phase 3 Acceptance
 
@@ -278,6 +284,4 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 
 ## Next Actions
 
-1. Add an incidents deep-link smoke test that opens `/dashboard/incidents?project_id=...&alert_rule=...` and verifies suggested action preset rendering.
-2. Expand gateway integration assertions for incidents list to validate response JSON shape end-to-end (not only proxy passthrough).
-3. Run compose-level `make test-e2e-phase3-incident` in CI after incident-ai image refresh to enforce pagination-envelope contract across environments.
+1. On next push/PR, verify first GitHub Actions run of `phase3-incident-e2e-smoke` and capture runtime + any CI-only flake signals.
