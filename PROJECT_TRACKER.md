@@ -49,12 +49,14 @@ Priority values:
 | 0 | Foundation | Days 1-3 | Done | 100% | All 7 Phase 0 acceptance criteria verified Pass |
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
-| 3 | Observability and AI Incident Engine | Weeks 7-10 | In Progress | 95% | Observability, incident diagnosis/context, auto-remediation, dashboard incident tooling, and Qdrant memory retrieval are implemented and locally validated; remaining work is first CI run verification for the new Phase 3 incident smoke job |
-| 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Pending Phase 3 completion |
+| 3 | Observability and AI Incident Engine | Weeks 7-10 | Done | 100% | All 11 Phase 3 acceptance criteria verified Pass locally and on CI; phase1-e2e-smoke and phase3-incident-e2e-smoke both passed on GitHub Actions run #5 (3m 46s, Success) |
+| 4 | Production Hardening | Weeks 11-12 | Not Started | 0% | Ready to begin Phase 4 planning and implementation |
 
 ## Active Sprint Focus
 
-Current sprint goal: Validate the first complete Phase 3 backend loop: observability alert -> incident-ai diagnosis -> manual action event flow.
+Current sprint goal: Close out Phase 3 verification and prepare the Phase 4 implementation backlog.
+
+Sprint status note: All listed Phase 2 and Phase 3 sprint tasks below are complete; Phase 4 kickoff tasks are the next backlog slice.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
@@ -106,7 +108,7 @@ Current sprint goal: Validate the first complete Phase 3 backend loop: observabi
 ### Phase 2 Checklist
 
 - [x] Infra generator templates and validation complete
-- [x] Pipeline generator workflow and PR creation complete
+- [x] Pipeline generator workflow generation and gateway integration complete
 - [x] Deployment engine blue-green and rollback complete
 - [x] Phase 2 unit and e2e tests passing
 
@@ -214,6 +216,8 @@ Use one line per update.
 | 2026-03-13 | Added CI artifact capture for `phase3-incident-e2e-smoke` (`compose-ps.txt` and `compose-logs.txt`) so the first external GitHub Actions run has preserved diagnostics even when the job flakes or fails |
 | 2026-03-13 | First GitHub Actions run of `phase3-incident-e2e-smoke` and `phase1-e2e-smoke` failed because `incident-ai` required Qdrant at startup but compose did not declare that dependency; fixed by adding `qdrant: service_healthy` to `incident-ai.depends_on`, then cold-start revalidated local `make test-e2e-phase1` and `make test-e2e-phase3-incident` pass |
 | 2026-03-13 | Reduced CI noise for rerun by opting workflow into Node 24 action runtime and setting `actions/setup-go` cache dependency path to `${matrix.module}/go.sum`, removing module-cache warnings caused by missing root `go.sum` |
+| 2026-03-13 | GitHub Actions run #5 passed all jobs (Success, 3m 46s, 1 artifact): 9 Go test matrix jobs, Python tests, Frontend production build, Phase 1 E2E Smoke (2m 56s), Phase 3 Incident E2E Smoke (2m 52s); Phase 3 marked Done at 100% |
+| 2026-03-13 | Re-ran fresh local Phase 1 -> Phase 3 validation (`make test-e2e-phase1`, `make test-e2e-phase2-flow`, `make test-e2e-phase3-observability`, `make test-e2e-phase3-incident`): all pass; added `phase2-e2e-smoke` to `.github/workflows/ci.yml` and relaxed observability compose healthcheck timing to tolerate cold-start `go run` dependency downloads |
 
 ### Phase 3 Acceptance
 
@@ -285,8 +289,9 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 | Verification date | 2026-03-13 |
 | Environment | Local macOS |
 | Result | Pass |
-| Notes | Full analyze -> infra -> pipeline -> deploy -> rollback flow now passes end-to-end through the gateway; deployment-engine module, proxy, compose smoke, and CI matrix coverage are in place. |
+| Notes | Full analyze -> infra -> pipeline -> deploy -> rollback flow passes end-to-end through the gateway on fresh local rerun; deployment-engine module, proxy, compose smoke, CI matrix coverage, and dedicated `phase2-e2e-smoke` workflow coverage are in place. |
 
 ## Next Actions
 
-1. Re-run GitHub Actions after the Qdrant dependency and CI warning fixes, then verify `phase1-e2e-smoke` and `phase3-incident-e2e-smoke` both pass.
+1. ~~Re-run GitHub Actions after the Qdrant dependency and CI warning fixes, then verify `phase1-e2e-smoke` and `phase3-incident-e2e-smoke` both pass.~~ **Done** — CI run #5 passed (Success, 3m 46s).
+2. Begin Phase 4: multi-tenancy RBAC, Vault secret management, Terraform modules, security hardening, full CLI command set.
