@@ -212,6 +212,8 @@ Use one line per update.
 | 2026-03-13 | Implemented incident-ai auto-remediation execution path for `auto_execute=true` (executes recommended/fallback actions, appends action history, publishes `autoheal.triggered` with `source=auto`), added regression test `test_auto_execute_runs_actions_and_publishes_autoheal`, and validated with containerized `pytest tests -q` (16/16 pass) plus `make test-e2e-phase3-incident` pass |
 | 2026-03-13 | Implemented Qdrant memory integration in incident-ai with collection bootstrap, deterministic local embeddings, top-3 similar incident retrieval for diagnosis and `/incidents/{id}/similar`, plus incident memory upsert after processing; validated with containerized `pytest tests -q` (18/18 pass) and `make test-e2e-phase3-incident` pass |
 | 2026-03-13 | Added CI artifact capture for `phase3-incident-e2e-smoke` (`compose-ps.txt` and `compose-logs.txt`) so the first external GitHub Actions run has preserved diagnostics even when the job flakes or fails |
+| 2026-03-13 | First GitHub Actions run of `phase3-incident-e2e-smoke` and `phase1-e2e-smoke` failed because `incident-ai` required Qdrant at startup but compose did not declare that dependency; fixed by adding `qdrant: service_healthy` to `incident-ai.depends_on`, then cold-start revalidated local `make test-e2e-phase1` and `make test-e2e-phase3-incident` pass |
+| 2026-03-13 | Reduced CI noise for rerun by opting workflow into Node 24 action runtime and setting `actions/setup-go` cache dependency path to `${matrix.module}/go.sum`, removing module-cache warnings caused by missing root `go.sum` |
 
 ### Phase 3 Acceptance
 
@@ -287,4 +289,4 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 
 ## Next Actions
 
-1. On next push/PR, verify first GitHub Actions run of `phase3-incident-e2e-smoke`, review job summary plus uploaded diagnostics artifact, and capture any CI-only flake signals.
+1. Re-run GitHub Actions after the Qdrant dependency and CI warning fixes, then verify `phase1-e2e-smoke` and `phase3-incident-e2e-smoke` both pass.

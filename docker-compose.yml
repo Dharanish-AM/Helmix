@@ -231,6 +231,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
       observability:
         condition: service_healthy
       deployment-engine:
