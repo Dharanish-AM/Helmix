@@ -82,9 +82,6 @@ func (c *Client) Enrich(ctx context.Context, result analyzer.Result) (analyzer.R
 		BuildCommand:  classified.BuildCommand,
 		TestCommand:   classified.TestCommand,
 	}
-	if classified.Port == 0 {
-		result.Stack.Port = result.Stack.Port
-	}
 	result.Confidence = classified.Confidence
 	result.FallbackUsed = true
 	return result, nil

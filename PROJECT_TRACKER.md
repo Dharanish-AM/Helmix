@@ -1,6 +1,6 @@
 # Helmix Project Tracker
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 Owner: Core Team
 Source plan: Helmix_Full_Implementation_Guide.md
 
@@ -50,22 +50,22 @@ Priority values:
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
 | 3 | Observability and AI Incident Engine | Weeks 7-10 | Done | 100% | All 11 Phase 3 acceptance criteria verified Pass locally and on CI; phase1-e2e-smoke and phase3-incident-e2e-smoke both passed on GitHub Actions run #5 (3m 46s, Success) |
-| 4 | Production Hardening | Weeks 11-12 | In Progress | 20% | Phase 4.1 Multi-tenancy & RBAC org endpoints implemented; Phase 4.2–4.5 pending |
+| 4 | Production Hardening | Weeks 11-12 | Done | 100% | All Phase 4 tracks complete, including production readiness checklist validation |
 
 ## Active Sprint Focus
 
-Current sprint goal: Begin Phase 4 Production Hardening — 4.1 (Multi-tenancy & RBAC) complete.
+Current sprint goal: Phase 4 Production Hardening completed.
 
-Sprint status note: Phase 4.1 org/RBAC foundation is done. Phase 4.2 (Vault), 4.3 (Terraform), 4.4 (Security Hardening), and 4.5 (Full CLI) are next.
+Sprint status note: Phase 4.1 through 4.5 are done and production readiness checklist passed.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
 | P4-01 | Implement org management endpoints (create, invite, accept-invite, list/update/remove members) in auth-service | P0 | Team | Done | 2026-03-13 | 2026-03-13 |
 | P4-02 | Add org_invites migration, RequireRole tests, gateway proxy for /api/v1/orgs | P0 | Team | Done | 2026-03-13 | 2026-03-13 |
-| P4-03 | Implement Vault integration (AppRole per service, secrets CRUD API) | P0 | Team | Not Started | 2026-03-14 | 2026-03-13 |
-| P4-04 | Create Terraform modules (VPC, K8s, DB, cache, registry) for AWS/GCP/Azure | P1 | Team | Not Started | 2026-03-15 | 2026-03-13 |
-| P4-05 | Security hardening: headers middleware, input validation, Trivy scanning, rate limiting | P0 | Team | Not Started | 2026-03-15 | 2026-03-13 |
-| P4-06 | Full CLI (Cobra + Viper): all commands + make cli-build for 3 platforms | P1 | Team | Not Started | 2026-03-16 | 2026-03-13 |
+| P4-03 | Implement Vault integration (AppRole per service, secrets CRUD API) | P0 | Team | Done | 2026-03-14 | 2026-03-14 |
+| P4-04 | Create Terraform modules (VPC, K8s, DB, cache, registry) for AWS/GCP/Azure | P1 | Team | Done | 2026-03-15 | 2026-03-14 |
+| P4-05 | Security hardening: headers middleware, input validation, Trivy scanning, rate limiting | P0 | Team | Done | 2026-03-15 | 2026-03-14 |
+| P4-06 | Full CLI (Cobra + Viper): all commands + make cli-build for 3 platforms | P1 | Team | Done | 2026-03-16 | 2026-03-14 |
 
 ## Phase Checklists
 
@@ -116,11 +116,11 @@ Sprint status note: Phase 4.1 org/RBAC foundation is done. Phase 4.2 (Vault), 4.
 - [x] RequireRole middleware tested for all role scenarios (allow/deny/unauthenticated)
 - [x] Gateway proxy for /api/v1/orgs → auth-service
 - [x] org_invites migration (000009) applied
-- [ ] Vault secret management complete
-- [ ] Terraform modules for cloud providers complete
-- [ ] Security hardening controls complete
-- [ ] Full CLI command set complete
-- [ ] Production readiness checklist passed
+- [x] Vault secret management complete
+- [x] Terraform modules for cloud providers complete
+- [x] Security hardening controls complete
+- [x] Full CLI command set complete
+- [x] Production readiness checklist passed
 
 ## Blockers and Risks Log
 
@@ -212,6 +212,16 @@ Use one line per update.
 | 2026-03-13 | GitHub Actions run #5 passed all jobs (Success, 3m 46s, 1 artifact): 9 Go test matrix jobs, Python tests, Frontend production build, Phase 1 E2E Smoke (2m 56s), Phase 3 Incident E2E Smoke (2m 52s); Phase 3 marked Done at 100% |
 | 2026-03-13 | Re-ran fresh local Phase 1 -> Phase 3 validation (`make test-e2e-phase1`, `make test-e2e-phase2-flow`, `make test-e2e-phase3-observability`, `make test-e2e-phase3-incident`): all pass; added `phase2-e2e-smoke` to `.github/workflows/ci.yml` and relaxed observability compose healthcheck timing to tolerate cold-start `go run` dependency downloads |
 | 2026-03-13 | Started Phase 4: implemented Phase 4.1 Multi-tenancy & RBAC — org_invites migration (000009), org store methods (CreateOrg/GetOrgMembers/CreateInvite/AcceptInvite/UpdateMemberRole/RemoveMember), six org endpoints on auth-service with RequireRole guards, /api/v1/orgs gateway proxy, RequireRole middleware tests (allow/deny/unauthenticated), gateway integration tests for orgs create/list/unauthenticated; all tests pass (`libs/auth`, `auth-service`, `api-gateway`) |
+| 2026-03-14 | Continued Phase 4.2: implemented Vault AppRole-backed KV client in auth-service, added owner/admin-protected secrets CRUD endpoints (`POST /secrets`, `GET /secrets/{service}/{key}`, `DELETE /secrets/{service}/{key}`), wired gateway proxy route `/api/v1/secrets`, added auth-service integration tests for success/permission-denied/vault-unavailable and gateway proxy tests; validated with `cd services/auth-service && go test ./...` and `cd services/api-gateway && go test ./...` |
+| 2026-03-14 | Completed Phase 4.2 operationalization: added `vault-bootstrap` compose init service with scripted AppRole/policy bootstrap (`scripts/bootstrap-vault-approle.sh`), added compose smoke target `make test-e2e-phase4-vault`, and validated end-to-end secrets CRUD via gateway with `TestPhase4VaultSecretsCRUDViaGateway` pass |
+| 2026-03-14 | Started Phase 4.4 security hardening slice: added gateway security headers middleware (CSP, HSTS, X-Frame-Options, nosniff, referrer policy), tightened auth-service secret path/value validation, added integration tests for both services, and revalidated with `cd services/api-gateway && go test ./...`, `cd services/auth-service && go test ./...`, and `make test-e2e-phase4-vault` |
+| 2026-03-14 | Extended Phase 4.4 security hardening: implemented gateway request-body size limits (path-aware caps), method-aware rate limiting (read/write buckets), fixed rate limiter ZSET member collision under burst traffic, added gateway tests for write-limit and oversized payload rejection, wired non-blocking Trivy scan target (`make security-scan-trivy`) plus CI job, and validated with `cd services/api-gateway && go test ./...` and `make test-e2e-phase4-vault` |
+| 2026-03-14 | Completed Phase 4.4 security hardening: upgraded vulnerable dependencies (`github.com/golang-jwt/jwt/v5` to `v5.2.2`, `golang.org/x/crypto` to `v0.35.0`, `next`/`eslint-config-next` to `14.2.35`), added `.trivyignore` risk-acceptance entries for local dev JWT key and one Next.js advisory requiring 15.x+, and revalidated with `make security-scan-trivy` (actionable HIGH/CRITICAL findings reduced to 0) plus `make test-e2e-phase4-vault` |
+| 2026-03-14 | Completed Phase 4.3 Terraform scaffolding: added `infra/terraform` multi-cloud modules (`vpc`, `kubernetes`, `database`, `cache`, `registry`) with common `cloud_provider` interface, added environment stacks (`dev`, `staging`, `production`), wired `make tf-plan`, `make tf-apply`, and `make tf-destroy`, and validated with `make tf-plan env=dev`, `make tf-plan env=staging`, and `make tf-plan env=production` |
+| 2026-03-14 | Completed Phase 4.5 full CLI: replaced bootstrap CLI with Cobra+Viper command tree (`health`, `auth`, `orgs`, `secrets`, `repos`, `infra`, `pipelines`, `deployments`, `observability`, `incidents`), added docs in `cli/helmix-cli/README.md`, added root `make cli-build` for linux/darwin/windows outputs, and validated with `cd cli/helmix-cli && go test ./... && go build ./cmd/helmix` plus `make cli-build` (artifacts in `dist/`) |
+| 2026-03-14 | Completed Phase 4 production readiness closure: fixed Vault AppRole bootstrap idempotency in `scripts/bootstrap-vault-approle.sh` for repeated compose runs, then validated all readiness gates with `make security-scan-trivy`, `make test-e2e-phase1`, `make test-e2e-phase2-flow`, `make test-e2e-phase3-observability`, `make test-e2e-phase3-incident`, `make test-e2e-phase4-vault`, `make cli-build`, and `make tf-plan env=production` |
+| 2026-03-14 | Improved root test reliability: fixed `make test` to run Go tests module-by-module (go.work-compatible) and run incident-ai tests in Docker (`python:3.12-slim`) to avoid host `pytest` dependency drift; validated with successful `make test` run (all selected Go modules pass; incident-ai `18 passed`) |
+| 2026-03-14 | Improved lint reliability and closed remaining static-analysis findings: rewired `make lint` to containerized `golangci-lint`/`ruff`/frontend `next lint`, fixed transaction rollback `errcheck` issues in auth-service/repo-analyzer stores, removed no-op self-assignment in repo-analyzer classifier, cleaned unused incident-ai imports, and validated with green `make lint`, green `make security-scan-trivy`, and post-fix `make test` pass |
 
 ### Phase 3 Acceptance
 

@@ -86,6 +86,25 @@ services:
       retries: 20
       start_period: 10s
 
+  vault-bootstrap:
+    image: hashicorp/vault:1.15
+    container_name: helmix-vault-bootstrap
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      VAULT_KV_MOUNT: ${VAULT_KV_MOUNT:-secret}
+      VAULT_ROLE_NAME: helmix-auth
+      VAULT_POLICY_NAME: helmix-auth
+      VAULT_APPROLE_ROLE_ID: ${VAULT_APPROLE_ROLE_ID:-helmix-auth-role-id}
+      VAULT_APPROLE_SECRET_ID: ${VAULT_APPROLE_SECRET_ID:-helmix-auth-secret-id}
+    command: sh /workspace/scripts/bootstrap-vault-approle.sh
+    depends_on:
+      vault:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+    restart: "no"
+
   auth-service:
     image: golang:1.23
     container_name: helmix-auth-service
@@ -103,6 +122,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
       REPO_ANALYZER_URL: http://repo-analyzer:8082
+      VAULT_ADDR: http://vault:8200
+      VAULT_APPROLE_ROLE_ID: ${VAULT_APPROLE_ROLE_ID:-helmix-auth-role-id}
+      VAULT_APPROLE_SECRET_ID: ${VAULT_APPROLE_SECRET_ID:-helmix-auth-secret-id}
+      VAULT_KV_MOUNT: ${VAULT_KV_MOUNT:-secret}
       COOKIE_SECURE: "false"
       REFRESH_TOKEN_COOKIE_NAME: helmix_refresh_token
       OAUTH_STATE_COOKIE_NAME: helmix_oauth_state
@@ -113,6 +136,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      vault:
+        condition: service_healthy
+      vault-bootstrap:
+        condition: service_completed_successfully
     volumes:
       - ./:/workspace
     ports:

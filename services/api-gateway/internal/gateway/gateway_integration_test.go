@@ -35,6 +35,34 @@ func TestRequestIDInjected(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersPresent(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("unexpected X-Content-Type-Options: %q", recorder.Header().Get("X-Content-Type-Options"))
+	}
+	if recorder.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("unexpected X-Frame-Options: %q", recorder.Header().Get("X-Frame-Options"))
+	}
+	if recorder.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("unexpected Referrer-Policy: %q", recorder.Header().Get("Referrer-Policy"))
+	}
+	if recorder.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("expected Content-Security-Policy header")
+	}
+	if recorder.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("expected Strict-Transport-Security header for https-forwarded request")
+	}
+}
+
 func TestUnauthenticatedRequestRejected(t *testing.T) {
 	gateway := newTestGateway(t)
 
@@ -62,7 +90,7 @@ func TestRateLimitEnforced(t *testing.T) {
 	gateway := newTestGateway(t)
 	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase1-rate-limit-user")
 
-	for i := 0; i < requestsPerMinute; i++ {
+	for i := int64(0); i < readRequestsPerMinute; i++ {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/projects", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -83,6 +111,61 @@ func TestRateLimitEnforced(t *testing.T) {
 	}
 	if strings.TrimSpace(recorder.Header().Get("Retry-After")) == "" {
 		t.Fatal("expected Retry-After header for limited request")
+	}
+}
+
+func TestWriteRateLimitEnforced(t *testing.T) {
+	gateway := newTestGateway(t)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase4-write-limit-user")
+
+	bodyPayload := `{"service":"deployment-engine","key":"registry_token","value":"abc"}`
+	for i := int64(0); i < writeRequestsPerMinute; i++ {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", strings.NewReader(bodyPayload))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		gateway.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status at write request %d: got %d want %d", i+1, recorder.Code, http.StatusOK)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", strings.NewReader(bodyPayload))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("unexpected status for limited write request: got %d want %d", recorder.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestSecretsBodyTooLargeRejected(t *testing.T) {
+	upstreamCalled := false
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase4-large-body-user")
+	largeValue := strings.Repeat("a", 17*1024)
+	body := strings.NewReader(`{"service":"deployment-engine","key":"registry_token","value":"` + largeValue + `"}`)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	gateway.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusRequestEntityTooLarge)
+	}
+	if upstreamCalled {
+		t.Fatal("did not expect upstream call for oversized request body")
 	}
 }
 
@@ -453,7 +536,7 @@ func TestIncidentListProxyAuthorized(t *testing.T) {
 			AlertID   string `json:"alert_id"`
 			CreatedAt string `json:"created_at"`
 			Diagnosis struct {
-				RootCause string  `json:"root_cause"`
+				RootCause  string  `json:"root_cause"`
 				Confidence float64 `json:"confidence"`
 			} `json:"ai_diagnosis"`
 		} `json:"items"`
@@ -580,6 +663,59 @@ func TestOrgsUnauthenticatedRejected(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/members", nil)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestSecretsCreateProxyAuthorized(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: got %s want %s", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/secrets" {
+			t.Fatalf("unexpected upstream path: got %q want %q", r.URL.Path, "/secrets")
+		}
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if !strings.Contains(string(requestBody), `"service":"deployment-engine"`) {
+			t.Fatalf("unexpected upstream body: %s", string(requestBody))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"service":"deployment-engine","key":"registry_token","value":"abc","version":1}`))
+	})
+
+	gateway := newTestGatewayWithUpstream(t, upstream)
+	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase4-secrets-user")
+
+	body := strings.NewReader(`{"service":"deployment-engine","key":"registry_token","value":"abc"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	gateway.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", recorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(recorder.Body.String(), `"version":1`) {
+		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestSecretsUnauthenticatedRejected(t *testing.T) {
+	gateway := newTestGateway(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/secrets/deployment-engine/registry_token", nil)
 
 	gateway.Handler().ServeHTTP(recorder, request)
 

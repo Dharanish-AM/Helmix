@@ -135,6 +135,13 @@ kubeconfig
 # ==============================================================
 # Infrastructure data volumes  (local dev outside Docker)
 # ==============================================================
+# Terraform local working directories and plans
+**/.terraform/
+**/.terraform.lock.hcl
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+
 # NATS JetStream file-based storage
 jetstream/
 

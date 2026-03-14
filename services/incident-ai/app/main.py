@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 import asyncpg
 import structlog
@@ -10,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from nats.aio.client import Client as NATS
 
 from .classifier import classify_stack
-from .config import Settings, load_settings
+from .config import load_settings
 from .context_clients import ContextClients
 from .llm.provider import get_provider
 from .memory_store import QdrantIncidentMemoryStore

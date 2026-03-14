@@ -1,0 +1,9 @@
+# Phase 4.4 temporary risk acceptance list.
+# Keep entries minimal and revisit regularly.
+
+# Local development JWT private key used for compose/e2e bootstrap.
+private-key
+
+# Next.js advisory currently requiring major-version migration line (15.x+) per Trivy DB.
+# Current project is pinned to latest 14.2.x patch stream and validated in production build.
+GHSA-h25m-26qc-wcjf

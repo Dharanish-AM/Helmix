@@ -81,7 +81,9 @@ func (s *Store) UpsertUserWithOrg(ctx context.Context, params UpsertUserParams) 
 	if err != nil {
 		return UserRecord{}, fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	var userRecord UserRecord
 	query := `
@@ -260,7 +262,9 @@ func (s *Store) CreateOrg(ctx context.Context, userID, name string) (OrgRecord, 
 	if err != nil {
 		return OrgRecord{}, fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	base := sanitizeSlug(name)
 	var orgID, slug string
@@ -351,7 +355,9 @@ func (s *Store) AcceptInvite(ctx context.Context, token, userID string) (string,
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	var inviteID, orgID, role string
 	var accepted bool

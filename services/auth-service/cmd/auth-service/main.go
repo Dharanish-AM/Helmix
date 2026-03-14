@@ -12,6 +12,7 @@ import (
 	"github.com/your-org/helmix/services/auth-service/internal/server"
 	"github.com/your-org/helmix/services/auth-service/internal/session"
 	"github.com/your-org/helmix/services/auth-service/internal/store"
+	vaultclient "github.com/your-org/helmix/services/auth-service/internal/vault"
 )
 
 func main() {
@@ -46,7 +47,18 @@ func main() {
 		config.GitHubRedirectURL,
 	)
 
-	handler := server.New(config, logger, githubAPI, databaseStore, sessionStore)
+	vaultSecretsClient, err := vaultclient.NewHTTPClient(vaultclient.Config{
+		Address:         config.VaultURL,
+		AppRoleID:       config.VaultAppRoleID,
+		AppRoleSecretID: config.VaultAppRoleSecretID,
+		KVMount:         config.VaultKVMount,
+	}, &http.Client{Timeout: config.HTTPClientTimeout})
+	if err != nil {
+		logger.Error("configure vault client", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
+	handler := server.New(config, logger, githubAPI, databaseStore, sessionStore, vaultSecretsClient)
 	httpServer := &http.Server{
 		Addr:              ":" + config.Port,
 		Handler:           handler.Handler(),

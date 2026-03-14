@@ -1,11 +1,13 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -23,7 +25,10 @@ import (
 	"github.com/your-org/helmix/services/api-gateway/internal/config"
 )
 
-const requestsPerMinute = 100
+const (
+	readRequestsPerMinute  = 120
+	writeRequestsPerMinute = 40
+)
 
 type contextKey string
 
@@ -84,6 +89,8 @@ func (g *Gateway) Close() error {
 func (g *Gateway) buildRouter() chi.Router {
 	router := chi.NewRouter()
 	router.Use(g.requestIDMiddleware)
+	router.Use(g.securityHeadersMiddleware)
+	router.Use(g.requestBodyLimitMiddleware)
 	router.Use(g.corsMiddleware)
 	router.Use(g.loggingMiddleware)
 	router.Use(g.otelMiddleware)
@@ -95,6 +102,7 @@ func (g *Gateway) buildRouter() chi.Router {
 	router.Mount("/api/v1/auth", g.proxyPrefix("/api/v1", g.config.AuthServiceURL))
 	// Org management routes proxy to the auth-service (prefix stripped: /api/v1).
 	router.Mount("/api/v1/orgs", g.proxyPrefix("/api/v1", g.config.AuthServiceURL))
+	router.Mount("/api/v1/secrets", g.proxyPrefix("/api/v1", g.config.AuthServiceURL))
 	router.Mount("/api/v1/repos", g.proxyPrefix("/api/v1/repos", g.config.RepoAnalyzerServiceURL))
 	router.Mount("/api/v1/infra", g.proxyPrefix("/api/v1/infra", g.config.InfraGeneratorServiceURL))
 	router.Mount("/api/v1/pipelines", g.proxyPrefix("/api/v1/pipelines", g.config.PipelineServiceURL))
@@ -129,6 +137,22 @@ func (g *Gateway) requestIDMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
 		w.Header().Set("X-Request-ID", requestID)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (g *Gateway) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+
+		forwardedProto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
+		if r.TLS != nil || forwardedProto == "https" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -214,7 +238,8 @@ func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		allowed, retryAfter, err := g.allowRequest(r.Context(), user.UserID)
+		rateBucket, requestsPerMinute := rateLimitForMethod(r.Method)
+		allowed, retryAfter, err := g.allowRequest(r.Context(), user.UserID, rateBucket, requestsPerMinute)
 		if err != nil {
 			g.logger.Error("rate limit failure", slog.String("error", err.Error()), slog.String("request_id", requestIDFromContext(r.Context())))
 			writeGatewayError(w, http.StatusServiceUnavailable, "service_unavailable", requestIDFromContext(r.Context()))
@@ -230,13 +255,14 @@ func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (g *Gateway) allowRequest(ctx context.Context, userID string) (bool, int, error) {
+func (g *Gateway) allowRequest(ctx context.Context, userID, bucket string, requestsPerMinute int64) (bool, int, error) {
 	now := time.Now().UnixMilli()
 	windowStart := now - int64(time.Minute/time.Millisecond)
-	key := "rate-limit:" + userID
+	key := "rate-limit:" + userID + ":" + bucket
+	member := strconv.FormatInt(now, 10) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	pipeline := g.redisClient.TxPipeline()
 	pipeline.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(windowStart, 10))
-	pipeline.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: strconv.FormatInt(now, 10)})
+	pipeline.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: member})
 	countCommand := pipeline.ZCard(ctx, key)
 	pipeline.Expire(ctx, key, 2*time.Minute)
 	if _, err := pipeline.Exec(ctx); err != nil {
@@ -246,6 +272,56 @@ func (g *Gateway) allowRequest(ctx context.Context, userID string) (bool, int, e
 		return false, int(time.Minute.Seconds()), nil
 	}
 	return true, 0, nil
+}
+
+func rateLimitForMethod(method string) (bucket string, requestsPerMinute int64) {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return "write", writeRequestsPerMinute
+	default:
+		return "read", readRequestsPerMinute
+	}
+}
+
+func (g *Gateway) requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/ws") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		limit := maxBodyBytesForPath(r.URL.Path)
+		payload, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+		if err != nil {
+			writeGatewayError(w, http.StatusBadRequest, "invalid_request_body", requestIDFromContext(r.Context()))
+			return
+		}
+		if int64(len(payload)) > limit {
+			writeGatewayError(w, http.StatusRequestEntityTooLarge, "request_too_large", requestIDFromContext(r.Context()))
+			return
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(payload))
+		r.ContentLength = int64(len(payload))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func maxBodyBytesForPath(path string) int64 {
+	switch {
+	case strings.HasPrefix(path, "/api/v1/secrets"):
+		return 16 * 1024
+	case strings.HasPrefix(path, "/api/v1/auth/repos/analyze"):
+		return 64 * 1024
+	case strings.HasPrefix(path, "/api/v1/infra/generate"), strings.HasPrefix(path, "/api/v1/pipelines/generate"):
+		return 256 * 1024
+	default:
+		return 1 * 1024 * 1024
+	}
 }
 
 func (g *Gateway) proxyPrefix(prefix, target string) http.Handler {
@@ -299,6 +375,12 @@ func writeGatewayError(w http.ResponseWriter, statusCode int, code, requestID st
 	}
 	if code == "rate_limited" {
 		message = "rate limit exceeded"
+	}
+	if code == "request_too_large" {
+		message = "request payload too large"
+	}
+	if code == "invalid_request_body" {
+		message = "invalid request body"
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)

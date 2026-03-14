@@ -19,6 +19,10 @@ type Config struct {
 	GitHubRedirectURL    string
 	GitHubOAuthBaseURL   string
 	GitHubAPIBaseURL     string
+	VaultURL             string
+	VaultAppRoleID       string
+	VaultAppRoleSecretID string
+	VaultKVMount         string
 	JWTPrivateKeyPath    string
 	JWTPublicKeyPath     string
 	DatabaseURL          string
@@ -43,6 +47,10 @@ func Load() (Config, error) {
 		GitHubRedirectURL:    strings.TrimSpace(os.Getenv("GITHUB_REDIRECT_URL")),
 		GitHubOAuthBaseURL:   getEnv("GITHUB_OAUTH_BASE_URL", "https://github.com/login/oauth"),
 		GitHubAPIBaseURL:     getEnv("GITHUB_API_BASE_URL", "https://api.github.com"),
+		VaultURL:             getEnv("VAULT_ADDR", "http://vault:8200"),
+		VaultAppRoleID:       strings.TrimSpace(os.Getenv("VAULT_APPROLE_ROLE_ID")),
+		VaultAppRoleSecretID: strings.TrimSpace(os.Getenv("VAULT_APPROLE_SECRET_ID")),
+		VaultKVMount:         getEnv("VAULT_KV_MOUNT", "secret"),
 		JWTPrivateKeyPath:    strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY_PATH")),
 		JWTPublicKeyPath:     strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY_PATH")),
 		DatabaseURL:          strings.TrimSpace(os.Getenv("DATABASE_URL")),
@@ -131,6 +139,19 @@ func validate(config Config) error {
 		if _, err := url.Parse(rawURL); err != nil {
 			return fmt.Errorf("parse url %q: %w", rawURL, err)
 		}
+	}
+
+	if _, err := url.Parse(config.VaultURL); err != nil {
+		return fmt.Errorf("parse url %q: %w", config.VaultURL, err)
+	}
+	if strings.TrimSpace(config.VaultAppRoleID) == "" {
+		return fmt.Errorf("VAULT_APPROLE_ROLE_ID is required")
+	}
+	if strings.TrimSpace(config.VaultAppRoleSecretID) == "" {
+		return fmt.Errorf("VAULT_APPROLE_SECRET_ID is required")
+	}
+	if strings.TrimSpace(config.VaultKVMount) == "" {
+		return fmt.Errorf("VAULT_KV_MOUNT is required")
 	}
 
 	return nil

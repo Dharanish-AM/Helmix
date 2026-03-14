@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/your-org/helmix/services/auth-service/internal/security"
 	"github.com/your-org/helmix/services/auth-service/internal/session"
 	"github.com/your-org/helmix/services/auth-service/internal/store"
+	vaultclient "github.com/your-org/helmix/services/auth-service/internal/vault"
 )
 
 type responseError struct {
@@ -120,23 +122,40 @@ type updateRoleRequest struct {
 	Role string `json:"role"`
 }
 
+type upsertSecretRequest struct {
+	Service string `json:"service"`
+	Key     string `json:"key"`
+	Value   any    `json:"value"`
+}
+
+type secretResponse struct {
+	Service string `json:"service"`
+	Key     string `json:"key"`
+	Value   any    `json:"value"`
+	Version int    `json:"version"`
+}
+
+var validSecretSegment = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 type Server struct {
 	config       config.Config
 	logger       *slog.Logger
 	githubClient *githubclient.Client
 	store        *store.Store
 	sessions     *session.Store
+	vaultClient  vaultclient.SecretClient
 	router       chi.Router
 }
 
 // New wires the auth-service HTTP router.
-func New(cfg config.Config, logger *slog.Logger, githubClient *githubclient.Client, store *store.Store, sessions *session.Store) *Server {
+func New(cfg config.Config, logger *slog.Logger, githubClient *githubclient.Client, store *store.Store, sessions *session.Store, vaultClient vaultclient.SecretClient) *Server {
 	srv := &Server{
 		config:       cfg,
 		logger:       logger,
 		githubClient: githubClient,
 		store:        store,
 		sessions:     sessions,
+		vaultClient:  vaultClient,
 	}
 	srv.router = srv.buildRouter()
 	return srv
@@ -171,6 +190,9 @@ func (s *Server) buildRouter() chi.Router {
 			ownerAdmin.Use(sharedauth.RequireRole("owner", "admin"))
 			ownerAdmin.Post("/orgs/invite", s.handleInvite)
 			ownerAdmin.Delete("/orgs/members/{user_id}", s.handleRemoveMember)
+			ownerAdmin.Post("/secrets", s.handleUpsertSecret)
+			ownerAdmin.Get("/secrets/{service}/{key}", s.handleGetSecret)
+			ownerAdmin.Delete("/secrets/{service}/{key}", s.handleDeleteSecret)
 		})
 
 		// Role update — owner only to prevent privilege escalation.
@@ -827,4 +849,118 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"user_id": targetUserID, "status": "removed"})
+}
+
+func (s *Server) handleUpsertSecret(w http.ResponseWriter, r *http.Request) {
+	if s.vaultClient == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", fmt.Errorf("vault client is not configured"))
+		return
+	}
+
+	var req upsertSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode upsert secret request: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.Service) == "" || strings.TrimSpace(req.Key) == "" || req.Value == nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service, key, and value are required"))
+		return
+	}
+	if !validSecretSegment.MatchString(strings.TrimSpace(req.Service)) || !validSecretSegment.MatchString(strings.TrimSpace(req.Key)) {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service and key may only contain letters, numbers, dashes, and underscores"))
+		return
+	}
+	if valueString, ok := req.Value.(string); ok && len(valueString) > 4096 {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("value exceeds max length of 4096 characters"))
+		return
+	}
+
+	record, err := s.vaultClient.UpsertSecret(r.Context(), req.Service, req.Key, req.Value)
+	if err != nil {
+		if errors.Is(err, vaultclient.ErrUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", err)
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, "vault_write_failed", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, secretResponse{
+		Service: record.Service,
+		Key:     record.Key,
+		Value:   record.Value,
+		Version: record.Version,
+	})
+}
+
+func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
+	if s.vaultClient == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", fmt.Errorf("vault client is not configured"))
+		return
+	}
+
+	service := strings.TrimSpace(chi.URLParam(r, "service"))
+	key := strings.TrimSpace(chi.URLParam(r, "key"))
+	if service == "" || key == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service and key path parameters are required"))
+		return
+	}
+	if !validSecretSegment.MatchString(service) || !validSecretSegment.MatchString(key) {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service and key may only contain letters, numbers, dashes, and underscores"))
+		return
+	}
+
+	record, err := s.vaultClient.GetSecret(r.Context(), service, key)
+	if err != nil {
+		if errors.Is(err, vaultclient.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "secret_not_found", err)
+			return
+		}
+		if errors.Is(err, vaultclient.ErrUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", err)
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, "vault_read_failed", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, secretResponse{
+		Service: record.Service,
+		Key:     record.Key,
+		Value:   record.Value,
+		Version: record.Version,
+	})
+}
+
+func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	if s.vaultClient == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", fmt.Errorf("vault client is not configured"))
+		return
+	}
+
+	service := strings.TrimSpace(chi.URLParam(r, "service"))
+	key := strings.TrimSpace(chi.URLParam(r, "key"))
+	if service == "" || key == "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service and key path parameters are required"))
+		return
+	}
+	if !validSecretSegment.MatchString(service) || !validSecretSegment.MatchString(key) {
+		s.writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("service and key may only contain letters, numbers, dashes, and underscores"))
+		return
+	}
+
+	if err := s.vaultClient.DeleteSecret(r.Context(), service, key); err != nil {
+		if errors.Is(err, vaultclient.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "secret_not_found", err)
+			return
+		}
+		if errors.Is(err, vaultclient.ErrUnavailable) {
+			s.writeError(w, http.StatusServiceUnavailable, "vault_unavailable", err)
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, "vault_delete_failed", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"service": service, "key": key, "status": "deleted"})
 }

@@ -196,7 +196,9 @@ func (s *Store) CreateConnectedRepo(ctx context.Context, orgID, githubRepo, defa
 	if err != nil {
 		return ConnectedRepo{}, fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	var projectID string
 	if err := tx.QueryRowContext(ctx, `

@@ -201,7 +201,6 @@ async def test_deployment_context_in_prompt():
 @respx.mock
 async def test_latency_alert_routing():
     """Verify that a p99_latency_ms alert results in scale_pods recommendation."""
-    import json as _json
     from datetime import datetime, timezone
 
     respx.get("http://observability:8086/metrics/project-lat").mock(
@@ -238,7 +237,6 @@ async def test_latency_alert_routing():
 @respx.mock
 async def test_zero_pod_alert_routing():
     """Verify that a ready_pod_count=0 alert results in restart_pods recommendation."""
-    import json as _json
     from datetime import datetime, timezone
 
     respx.get("http://observability:8086/metrics/project-zp").mock(
