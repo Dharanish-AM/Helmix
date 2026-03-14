@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -12,15 +13,17 @@ var ErrNotFound = errors.New("deployment not found")
 
 // Deployment is the persisted deployment record.
 type Deployment struct {
-	ID          string     `json:"id"`
-	RepoID      string     `json:"repo_id"`
-	CommitSHA   string     `json:"commit_sha"`
-	Branch      string     `json:"branch"`
-	Status      string     `json:"status"`
-	Environment string     `json:"environment"`
-	ImageTag    string     `json:"image_tag,omitempty"`
-	DeployedAt  *time.Time `json:"deployed_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          string         `json:"id"`
+	RepoID      string         `json:"repo_id"`
+	CommitSHA   string         `json:"commit_sha"`
+	Branch      string         `json:"branch"`
+	ScanResults map[string]any `json:"scan_results,omitempty"`
+	AcceptRisk  bool           `json:"accept_risk"`
+	Status      string         `json:"status"`
+	Environment string         `json:"environment"`
+	ImageTag    string         `json:"image_tag,omitempty"`
+	DeployedAt  *time.Time     `json:"deployed_at,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 // CreateDeploymentParams captures the row values required to start a deployment.
@@ -28,6 +31,8 @@ type CreateDeploymentParams struct {
 	RepoID      string
 	CommitSHA   string
 	Branch      string
+	ScanResults map[string]any
+	AcceptRisk  bool
 	Environment string
 	ImageTag    string
 	Status      string
@@ -46,14 +51,21 @@ func New(db *sql.DB) *Store {
 // CreateDeployment inserts a new deployment row.
 func (s *Store) CreateDeployment(ctx context.Context, params CreateDeploymentParams) (Deployment, error) {
 	const query = `
-		INSERT INTO deployments (repo_id, commit_sha, branch, status, environment, image_tag)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at`
+		INSERT INTO deployments (repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at`
+
+	scanResultsJSON, err := marshalJSONB(params.ScanResults)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("marshal scan results: %w", err)
+	}
 
 	row := s.db.QueryRowContext(ctx, query,
 		params.RepoID,
 		params.CommitSHA,
 		params.Branch,
+		scanResultsJSON,
+		params.AcceptRisk,
 		params.Status,
 		params.Environment,
 		nullIfEmpty(params.ImageTag),
@@ -69,7 +81,7 @@ func (s *Store) CreateDeployment(ctx context.Context, params CreateDeploymentPar
 // GetDeployment loads a deployment by id.
 func (s *Store) GetDeployment(ctx context.Context, deploymentID string) (Deployment, error) {
 	const query = `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE id = $1`
 
@@ -89,7 +101,7 @@ func (s *Store) ListDeploymentsByProject(ctx context.Context, projectID string, 
 		limit = 10
 	}
 	const query = `
-		SELECT d.id, d.repo_id, d.commit_sha, d.branch, d.status, d.environment, d.image_tag, d.deployed_at, d.created_at
+		SELECT d.id, d.repo_id, d.commit_sha, d.branch, d.scan_results, d.accept_risk, d.status, d.environment, d.image_tag, d.deployed_at, d.created_at
 		FROM deployments d
 		JOIN repos r ON r.id = d.repo_id
 		WHERE r.project_id = $1
@@ -133,7 +145,7 @@ func (s *Store) LookupProjectID(ctx context.Context, repoID string) (string, err
 // FindActiveDeployment returns the currently live deployment for a repo/environment.
 func (s *Store) FindActiveDeployment(ctx context.Context, repoID, environment string) (*Deployment, error) {
 	const query = `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE repo_id = $1 AND environment = $2 AND status = 'live'
 		ORDER BY COALESCE(deployed_at, created_at) DESC, created_at DESC
@@ -152,7 +164,7 @@ func (s *Store) FindActiveDeployment(ctx context.Context, repoID, environment st
 // FindPreviousDeployment returns the latest non-current live or superseded deployment for rollback context.
 func (s *Store) FindPreviousDeployment(ctx context.Context, repoID, environment, currentDeploymentID string) (*Deployment, error) {
 	const query = `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE repo_id = $1
 		  AND environment = $2
@@ -185,7 +197,7 @@ func (s *Store) PromoteDeployment(ctx context.Context, deploymentID string, depl
 	defer func() { _ = tx.Rollback() }()
 
 	current, err := scanDeployment(tx.QueryRowContext(ctx, `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE id = $1`, deploymentID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -225,7 +237,7 @@ func (s *Store) RollbackDeployment(ctx context.Context, deploymentID string, rol
 	defer func() { _ = tx.Rollback() }()
 
 	current, err := scanDeployment(tx.QueryRowContext(ctx, `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE id = $1`, deploymentID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -236,7 +248,7 @@ func (s *Store) RollbackDeployment(ctx context.Context, deploymentID string, rol
 	}
 
 	previous, err := scanDeployment(tx.QueryRowContext(ctx, `
-		SELECT id, repo_id, commit_sha, branch, status, environment, image_tag, deployed_at, created_at
+		SELECT id, repo_id, commit_sha, branch, scan_results, accept_risk, status, environment, image_tag, deployed_at, created_at
 		FROM deployments
 		WHERE repo_id = $1
 		  AND environment = $2
@@ -295,6 +307,8 @@ type deploymentScanner interface {
 
 func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 	var deployment Deployment
+	var scanResultsRaw []byte
+	var acceptRisk bool
 	var imageTag sql.NullString
 	var deployedAt sql.NullTime
 	if err := scanner.Scan(
@@ -302,6 +316,8 @@ func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 		&deployment.RepoID,
 		&deployment.CommitSHA,
 		&deployment.Branch,
+		&scanResultsRaw,
+		&acceptRisk,
 		&deployment.Status,
 		&deployment.Environment,
 		&imageTag,
@@ -310,6 +326,12 @@ func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 	); err != nil {
 		return Deployment{}, err
 	}
+	if len(scanResultsRaw) > 0 {
+		if err := json.Unmarshal(scanResultsRaw, &deployment.ScanResults); err != nil {
+			return Deployment{}, fmt.Errorf("unmarshal scan_results: %w", err)
+		}
+	}
+	deployment.AcceptRisk = acceptRisk
 	if imageTag.Valid {
 		deployment.ImageTag = imageTag.String
 	}
@@ -318,6 +340,20 @@ func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 		deployment.DeployedAt = &deployedAtUTC
 	}
 	return deployment, nil
+}
+
+func marshalJSONB(payload map[string]any) ([]byte, error) {
+	if payload == nil {
+		return []byte("{}"), nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) == 0 {
+		return []byte("{}"), nil
+	}
+	return encoded, nil
 }
 
 func nullIfEmpty(value string) any {

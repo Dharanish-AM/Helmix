@@ -138,10 +138,14 @@ func TestPhase3ObservabilityAlertFlow(t *testing.T) {
 	}
 
 	var alerts []struct {
-		ProjectID string `json:"project_id"`
-		Severity  string `json:"severity"`
-		Status    string `json:"status"`
-		Title     string `json:"title"`
+		ProjectID string  `json:"project_id"`
+		Rule      string  `json:"rule"`
+		Severity  string  `json:"severity"`
+		Status    string  `json:"status"`
+		Metric    string  `json:"metric"`
+		Value     float64 `json:"value"`
+		Threshold float64 `json:"threshold"`
+		Title     string  `json:"title"`
 	}
 	if err := json.NewDecoder(alertsResponse.Body).Decode(&alerts); err != nil {
 		t.Fatalf("decode alerts response failed: %v", err)
@@ -151,6 +155,9 @@ func TestPhase3ObservabilityAlertFlow(t *testing.T) {
 	}
 	if alerts[0].ProjectID != projectID || alerts[0].Severity != "critical" || alerts[0].Status != "open" {
 		t.Fatalf("unexpected alert payload: %+v", alerts[0])
+	}
+	if alerts[0].Rule == "" || alerts[0].Metric == "" || alerts[0].Value <= 0 || alerts[0].Threshold <= 0 {
+		t.Fatalf("expected real alert detail fields, got %+v", alerts[0])
 	}
 
 	currentRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBaseURL+"/api/v1/observability/metrics/"+projectID+"/current", nil)

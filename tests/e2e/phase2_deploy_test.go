@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -98,6 +99,74 @@ func TestPhase2GatewayDeploymentRollbackAuthorized(t *testing.T) {
 	assertDeploymentStatusInDB(t, ctx, db, previousDeploymentID, "live")
 }
 
+func TestPhase2GatewayDeploymentRiskOverride(t *testing.T) {
+	apiBaseURL := envOrDefault("E2E_API_BASE_URL", "http://localhost:8080")
+	databaseURL := envOrDefault("E2E_DATABASE_URL", "postgres://helmix:helmix@localhost:5432/helmix?sslmode=disable")
+	jwtPrivateKeyPath := requireJWTPrivateKeyPath(t, envOrDefault("E2E_JWT_PRIVATE_KEY_PATH", "./certs/jwt-private.pem"))
+
+	if !isHealthy(apiBaseURL + "/health") {
+		t.Skipf("gateway not reachable at %s", apiBaseURL)
+	}
+
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("open postgres failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Ping(); err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	userID, orgID, _, repoID := seedRepoGraph(t, ctx, db)
+
+	identity := sharedauth.User{
+		UserID:         userID,
+		OrgID:          orgID,
+		Role:           "owner",
+		Email:          fmt.Sprintf("phase2-risk-%d@example.com", time.Now().UnixNano()),
+		GitHubUsername: "phase2-risk",
+	}
+	jwtToken, err := sharedauth.SignUserToken(jwtPrivateKeyPath, identity, time.Hour)
+	if err != nil {
+		t.Fatalf("sign jwt failed: %v", err)
+	}
+
+	riskyPayload := map[string]any{
+		"repo_id":      repoID,
+		"commit_sha":   "phase2-risk-sha",
+		"branch":       "main",
+		"environment":  "production",
+		"image_tag":    "ghcr.io/helmix/demo:phase2-risk-sha",
+		"scan_results": map[string]any{"critical": 1, "high": 2},
+	}
+
+	statusCode, responseBody := startDeploymentRequestExpectStatus(t, ctx, apiBaseURL, jwtToken, riskyPayload, http.StatusBadRequest)
+	if !bytes.Contains(responseBody, []byte(`"code":"invalid_request"`)) {
+		t.Fatalf("unexpected risky deploy rejection payload: %s", string(responseBody))
+	}
+	if statusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected risky deploy status: got %d want %d", statusCode, http.StatusBadRequest)
+	}
+
+	overridePayload := map[string]any{
+		"repo_id":      repoID,
+		"commit_sha":   "phase2-risk-accepted-sha",
+		"branch":       "main",
+		"environment":  "production",
+		"image_tag":    "ghcr.io/helmix/demo:phase2-risk-accepted-sha",
+		"scan_results": map[string]any{"critical": 1, "high": 2},
+		"accept_risk":  true,
+	}
+
+	accepted := startDeploymentRequest(t, ctx, apiBaseURL, jwtToken, overridePayload)
+	if accepted.Status != "deploying" {
+		t.Fatalf("unexpected override deployment status: got %q want %q", accepted.Status, "deploying")
+	}
+}
+
 type deploymentStatusResponse struct {
 	ID                      string `json:"id"`
 	Status                  string `json:"status"`
@@ -106,6 +175,24 @@ type deploymentStatusResponse struct {
 }
 
 func startDeploymentRequest(t *testing.T, ctx context.Context, apiBaseURL, jwtToken string, payload map[string]any) deploymentStatusResponse {
+	t.Helper()
+
+	statusCode, body := startDeploymentRequestExpectStatus(t, ctx, apiBaseURL, jwtToken, payload, http.StatusAccepted)
+	if statusCode != http.StatusAccepted {
+		t.Fatalf("unexpected deployment status: got %d want %d body=%s", statusCode, http.StatusAccepted, string(body))
+	}
+
+	var parsed deploymentStatusResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode deployment response failed: %v", err)
+	}
+	if parsed.ID == "" {
+		t.Fatal("expected deployment id in response")
+	}
+	return parsed
+}
+
+func startDeploymentRequestExpectStatus(t *testing.T, ctx context.Context, apiBaseURL, jwtToken string, payload map[string]any, expectedStatus int) (int, []byte) {
 	t.Helper()
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -125,18 +212,15 @@ func startDeploymentRequest(t *testing.T, ctx context.Context, apiBaseURL, jwtTo
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("unexpected deployment status: got %d want %d", response.StatusCode, http.StatusAccepted)
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read deployment response failed: %v", err)
 	}
 
-	var parsed deploymentStatusResponse
-	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
-		t.Fatalf("decode deployment response failed: %v", err)
+	if response.StatusCode != expectedStatus {
+		t.Fatalf("unexpected deployment status: got %d want %d body=%s", response.StatusCode, expectedStatus, string(bodyBytes))
 	}
-	if parsed.ID == "" {
-		t.Fatal("expected deployment id in response")
-	}
-	return parsed
+	return response.StatusCode, bodyBytes
 }
 
 func waitForDeploymentState(t *testing.T, ctx context.Context, apiBaseURL, jwtToken, deploymentID string, predicate func(deploymentStatusResponse) bool) deploymentStatusResponse {

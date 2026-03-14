@@ -172,16 +172,61 @@ export type Alert = {
   id: string;
   project_id: string;
   rule: string;
-  severity: "warning" | "critical";
-  status: "open" | "resolved";
+  severity: "warning" | "critical" | string;
+  status: "open" | "resolved" | string;
   title: string;
   description: string;
   metric: string;
-  value: number;
-  threshold: number;
+  value: number | null;
+  threshold: number | null;
   fired_at: string;
   resolved_at: string | null;
 };
+
+function toAlertNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function normalizeAlert(payload: unknown): Alert | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : "";
+  const projectId = typeof record.project_id === "string" ? record.project_id : "";
+  const title = typeof record.title === "string" ? record.title : "Untitled alert";
+  const description = typeof record.description === "string" ? record.description : "";
+  const severity = typeof record.severity === "string" ? record.severity : "warning";
+  const status = typeof record.status === "string" ? record.status : "open";
+  const createdAt = typeof record.created_at === "string" ? record.created_at : null;
+  const firedAt = typeof record.fired_at === "string" ? record.fired_at : createdAt ?? new Date(0).toISOString();
+  const resolvedAt = typeof record.resolved_at === "string" ? record.resolved_at : null;
+
+  return {
+    id,
+    project_id: projectId,
+    rule: typeof record.rule === "string" && record.rule.trim() ? record.rule : title,
+    severity,
+    status,
+    title,
+    description,
+    metric: typeof record.metric === "string" && record.metric.trim() ? record.metric : "n/a",
+    value: toAlertNumber(record.value),
+    threshold: toAlertNumber(record.threshold),
+    fired_at: firedAt,
+    resolved_at: resolvedAt,
+  };
+}
 
 export async function fetchCurrentMetrics(
   token: string,
@@ -207,7 +252,76 @@ export async function fetchAlerts(
   );
   if (response.status === 401) throw new Error("unauthorized");
   if (!response.ok) throw new Error(`alerts_failed:${response.status}`);
-  return response.json() as Promise<Alert[]>;
+  const payload = (await response.json()) as unknown;
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  return payload
+    .map((item) => normalizeAlert(item))
+    .filter((item): item is Alert => item !== null);
+}
+
+export type TelemetrySource = {
+  project_id: string;
+  source_type: "helmix-json" | "prometheus" | string;
+  metrics_url: string;
+  scrape_interval_seconds: number;
+  enabled: boolean;
+  last_scraped_at?: string | null;
+  last_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export async function fetchTelemetrySource(
+  token: string,
+  projectId: string
+): Promise<TelemetrySource | null> {
+  const response = await fetch(
+    authURL(`/api/v1/observability/sources/${encodeURIComponent(projectId)}`),
+    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }
+  );
+  if (response.status === 404) return null;
+  if (response.status === 401) throw new Error("unauthorized");
+  if (!response.ok) throw new Error(`telemetry_source_failed:${response.status}`);
+  return response.json() as Promise<TelemetrySource>;
+}
+
+export async function saveTelemetrySource(
+  token: string,
+  projectId: string,
+  source: Omit<TelemetrySource, "project_id" | "last_scraped_at" | "last_error" | "created_at" | "updated_at">
+): Promise<TelemetrySource> {
+  const response = await fetch(
+    authURL(`/api/v1/observability/sources/${encodeURIComponent(projectId)}`),
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(source),
+    }
+  );
+  if (response.status === 401) throw new Error("unauthorized");
+  if (!response.ok) throw new Error(`save_telemetry_source_failed:${response.status}`);
+  return response.json() as Promise<TelemetrySource>;
+}
+
+export async function scrapeTelemetrySource(
+  token: string,
+  projectId: string
+): Promise<{ snapshot: MetricSnapshot; alerts_fired: Alert[] }> {
+  const response = await fetch(
+    authURL(`/api/v1/observability/sources/${encodeURIComponent(projectId)}/scrape`),
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (response.status === 401) throw new Error("unauthorized");
+  if (!response.ok) throw new Error(`scrape_telemetry_source_failed:${response.status}`);
+  return response.json() as Promise<{ snapshot: MetricSnapshot; alerts_fired: Alert[] }>;
 }
 
 // ---------------------------------------------------------------------------

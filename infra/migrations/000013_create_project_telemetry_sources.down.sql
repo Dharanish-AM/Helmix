@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_project_telemetry_sources_updated_at;
+DROP TABLE IF EXISTS project_telemetry_sources;

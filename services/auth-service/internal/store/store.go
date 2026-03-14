@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -45,6 +46,17 @@ type UpsertUserParams struct {
 type GitHubTokenRecord struct {
 	Nonce      []byte
 	Ciphertext []byte
+}
+
+// AuditLogEntry captures a persisted auth-related audit event.
+type AuditLogEntry struct {
+	Service     string
+	EventType   string
+	ActorUserID string
+	ActorOrgID  string
+	RequestID   string
+	IPAddress   string
+	Metadata    map[string]any
 }
 
 // Store wraps PostgreSQL access for auth-service.
@@ -170,6 +182,44 @@ func (s *Store) GetGitHubTokenByUserID(ctx context.Context, userID string) (GitH
 	}
 
 	return tokenRecord, nil
+}
+
+// CreateAuditLog persists an auth-related audit event.
+func (s *Store) CreateAuditLog(ctx context.Context, entry AuditLogEntry) error {
+	metadata := entry.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal audit metadata: %w", err)
+	}
+
+	const query = `
+		INSERT INTO audit_logs (
+			service,
+			event_type,
+			actor_user_id,
+			actor_org_id,
+			request_id,
+			ip_address,
+			metadata
+		) VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, NULLIF($5, ''), NULLIF($6, ''), $7::jsonb)`
+
+	if _, err := s.db.ExecContext(ctx, query,
+		strings.TrimSpace(entry.Service),
+		strings.TrimSpace(entry.EventType),
+		strings.TrimSpace(entry.ActorUserID),
+		strings.TrimSpace(entry.ActorOrgID),
+		strings.TrimSpace(entry.RequestID),
+		strings.TrimSpace(entry.IPAddress),
+		string(metadataJSON),
+	); err != nil {
+		return fmt.Errorf("insert audit log: %w", err)
+	}
+
+	return nil
 }
 
 func ensureDefaultOrg(ctx context.Context, tx *sql.Tx, userID, username string) (string, string, string, error) {

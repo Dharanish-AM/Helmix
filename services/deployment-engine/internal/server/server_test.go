@@ -34,11 +34,13 @@ func TestDeployEndpointReturnsAccepted(t *testing.T) {
 	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), engine)
 
 	payload := map[string]any{
-		"repo_id":      "repo-1",
-		"commit_sha":   "sha-123",
-		"branch":       "main",
-		"environment":  "production",
-		"image_tag":    "ghcr.io/acme/app:sha-123",
+		"repo_id":          "repo-1",
+		"commit_sha":       "sha-123",
+		"branch":           "main",
+		"scan_results":     map[string]any{"critical": 1, "high": 0},
+		"accept_risk":      true,
+		"environment":      "production",
+		"image_tag":        "ghcr.io/acme/app:sha-123",
 		"simulate_failure": false,
 	}
 	body, err := json.Marshal(payload)
@@ -57,6 +59,12 @@ func TestDeployEndpointReturnsAccepted(t *testing.T) {
 	}
 	if engine.lastOrgID != "org-1" {
 		t.Fatalf("unexpected org id: got %s want %s", engine.lastOrgID, "org-1")
+	}
+	if !engine.lastStartRequest.AcceptRisk {
+		t.Fatal("expected accept_risk=true to be passed to engine")
+	}
+	if engine.lastStartRequest.ScanResults["critical"] != float64(1) {
+		t.Fatalf("unexpected scan_results payload: %+v", engine.lastStartRequest.ScanResults)
 	}
 }
 
@@ -119,12 +127,14 @@ type fakeEngine struct {
 	listErr          error
 	rollbackErr      error
 	lastOrgID        string
+	lastStartRequest deploy.StartRequest
 	lastProjectID    string
 	lastLimit        int
 }
 
-func (f *fakeEngine) StartDeployment(_ context.Context, orgID string, _ deploy.StartRequest) (deploy.DeploymentResponse, error) {
+func (f *fakeEngine) StartDeployment(_ context.Context, orgID string, request deploy.StartRequest) (deploy.DeploymentResponse, error) {
 	f.lastOrgID = orgID
+	f.lastStartRequest = request
 	return f.startResponse, f.startErr
 }
 

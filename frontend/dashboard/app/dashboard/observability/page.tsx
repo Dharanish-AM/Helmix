@@ -4,10 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
+  fetchConnectedRepos,
   fetchCurrentMetrics,
   fetchAlerts,
+  fetchTelemetrySource,
+  saveTelemetrySource,
+  scrapeTelemetrySource,
+  type ConnectedRepo,
   type MetricSnapshot,
   type Alert,
+  type TelemetrySource,
 } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
@@ -55,12 +61,37 @@ function MetricBar({ label, value, unit, threshold, max = 100 }: MetricBarProps)
   );
 }
 
+function formatAlertNumber(value: number | null): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "n/a";
+  }
+  return value.toFixed(2);
+}
+
+function formatAlertTime(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "n/a";
+  }
+  return parsed.toLocaleTimeString();
+}
+
 export default function ObservabilityPage() {
   const router = useRouter();
   const { token } = useAuthStore();
   const [projectId, setProjectId] = useState("");
+  const [projects, setProjects] = useState<ConnectedRepo[]>([]);
   const [metrics, setMetrics] = useState<MetricSnapshot | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [telemetrySource, setTelemetrySource] = useState<TelemetrySource | null>(null);
+  const [telemetrySourceType, setTelemetrySourceType] = useState("helmix-json");
+  const [telemetryMetricsURL, setTelemetryMetricsURL] = useState("");
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
+  const [telemetrySaveState, setTelemetrySaveState] = useState<{
+    loading: boolean;
+    message: string | null;
+    error: string | null;
+  }>({ loading: false, message: null, error: null });
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -72,6 +103,70 @@ export default function ObservabilityPage() {
       router.replace("/login");
     }
   }, [token, router]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const projectFromQuery = params.get("project_id")?.trim() ?? "";
+    if (projectFromQuery && projectFromQuery !== projectId) {
+      setProjectId(projectFromQuery);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+
+    let isCancelled = false;
+    fetchConnectedRepos(token)
+      .then((items) => {
+        if (!isCancelled) {
+          setProjects(items);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : "unknown error";
+        if (message === "unauthorized") {
+          router.replace("/login");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [router, token]);
+
+  useEffect(() => {
+    if (!token || !projectId.trim()) {
+      setTelemetrySource(null);
+      setTelemetryMetricsURL("");
+      setTelemetrySourceType("helmix-json");
+      setTelemetryEnabled(true);
+      return;
+    }
+
+    let isCancelled = false;
+    fetchTelemetrySource(token, projectId.trim())
+      .then((source) => {
+        if (isCancelled) {
+          return;
+        }
+        setTelemetrySource(source);
+        setTelemetryMetricsURL(source?.metrics_url ?? "");
+        setTelemetrySourceType(source?.source_type ?? "helmix-json");
+        setTelemetryEnabled(source?.enabled ?? true);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : "unknown error";
+        if (message === "unauthorized") {
+          router.replace("/login");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [projectId, router, token]);
 
   const handleFetch = useCallback(async (options?: { silent?: boolean }) => {
     if (!token || !projectId.trim()) return;
@@ -112,8 +207,9 @@ export default function ObservabilityPage() {
     return () => clearInterval(intervalId);
   }, [autoRefresh, handleFetch, projectId, refreshIntervalSeconds, token]);
 
-  const openAlerts = alerts.filter((a) => a.status === "open");
-  const resolvedAlerts = alerts.filter((a) => a.status === "resolved");
+  const alertItems = Array.isArray(alerts) ? alerts : [];
+  const openAlerts = alertItems.filter((a) => a.status === "open");
+  const resolvedAlerts = alertItems.filter((a) => a.status === "resolved");
 
   function openIncidentTriage(alert: Alert) {
     if (!projectId.trim()) {
@@ -122,10 +218,47 @@ export default function ObservabilityPage() {
     const params = new URLSearchParams({
       project_id: projectId.trim(),
       alert_id: alert.id,
-      alert_rule: alert.rule,
-      alert_metric: alert.metric,
+      alert_rule: alert.rule ?? "",
+      alert_metric: alert.metric ?? "",
     });
     router.push(`/dashboard/incidents?${params.toString()}`);
+  }
+
+  async function handleSaveTelemetrySource() {
+    if (!token || !projectId.trim() || !telemetryMetricsURL.trim()) {
+      return;
+    }
+    setTelemetrySaveState({ loading: true, message: null, error: null });
+    try {
+      const saved = await saveTelemetrySource(token, projectId.trim(), {
+        source_type: telemetrySourceType,
+        metrics_url: telemetryMetricsURL.trim(),
+        scrape_interval_seconds: telemetrySource?.scrape_interval_seconds ?? 30,
+        enabled: telemetryEnabled,
+      });
+      setTelemetrySource(saved);
+      setTelemetrySaveState({ loading: false, message: "Telemetry source saved.", error: null });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "unknown error";
+      setTelemetrySaveState({ loading: false, message: null, error: message });
+    }
+  }
+
+  async function handleScrapeTelemetrySource() {
+    if (!token || !projectId.trim()) {
+      return;
+    }
+    setTelemetrySaveState({ loading: true, message: null, error: null });
+    try {
+      await scrapeTelemetrySource(token, projectId.trim());
+      await handleFetch({ silent: true });
+      const refreshedSource = await fetchTelemetrySource(token, projectId.trim());
+      setTelemetrySource(refreshedSource);
+      setTelemetrySaveState({ loading: false, message: "Telemetry scrape completed.", error: null });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "unknown error";
+      setTelemetrySaveState({ loading: false, message: null, error: message });
+    }
   }
 
   return (
@@ -133,6 +266,18 @@ export default function ObservabilityPage() {
       <h1 className="mb-6 text-2xl font-bold text-gray-800">Observability</h1>
 
       <div className="mb-3 flex flex-wrap gap-3">
+        <select
+          value={projectId}
+          onChange={(event) => setProjectId(event.target.value)}
+          className="w-80 rounded-xl border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        >
+          <option value="">Select connected project</option>
+          {projects.map((project) => (
+            <option key={project.project_id} value={project.project_id}>
+              {project.project_name} ({project.github_repo})
+            </option>
+          ))}
+        </select>
         <input
           type="text"
           placeholder="Project ID"
@@ -156,6 +301,12 @@ export default function ObservabilityPage() {
           Refresh
         </button>
       </div>
+
+      {projectId && projects.some((project) => project.project_id === projectId) ? (
+        <p className="mb-4 text-xs text-gray-500">
+          Viewing {projects.find((project) => project.project_id === projectId)?.project_name}.
+        </p>
+      ) : null}
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -184,6 +335,73 @@ export default function ObservabilityPage() {
           </span>
         ) : null}
       </div>
+
+      <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-gray-800">Real Telemetry Source</h2>
+            <p className="text-sm text-gray-500">
+              Configure a real metrics endpoint for this project. Supported source types are a Helmix JSON snapshot endpoint or Prometheus/OpenMetrics text exposition with Helmix metric names.
+            </p>
+          </div>
+          {telemetrySource?.last_scraped_at ? (
+            <p className="text-xs text-gray-500">
+              Last scrape: {new Date(telemetrySource.last_scraped_at).toLocaleString()}
+            </p>
+          ) : null}
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-[180px_minmax(0,1fr)_120px]">
+          <select
+            value={telemetrySourceType}
+            onChange={(event) => setTelemetrySourceType(event.target.value)}
+            className="rounded-xl border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+          >
+            <option value="helmix-json">Helmix JSON</option>
+            <option value="prometheus">Prometheus</option>
+          </select>
+          <input
+            type="url"
+            placeholder="https://your-app.example.com/metrics"
+            value={telemetryMetricsURL}
+            onChange={(event) => setTelemetryMetricsURL(event.target.value)}
+            className="rounded-xl border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+          />
+          <label className="flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              checked={telemetryEnabled}
+              onChange={(event) => setTelemetryEnabled(event.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-amber-500 focus:ring-amber-300"
+            />
+            Enabled
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <button
+            onClick={() => void handleSaveTelemetrySource()}
+            disabled={telemetrySaveState.loading || !projectId.trim() || !telemetryMetricsURL.trim()}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            Save Source
+          </button>
+          <button
+            onClick={() => void handleScrapeTelemetrySource()}
+            disabled={telemetrySaveState.loading || !projectId.trim()}
+            className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            Scrape Now
+          </button>
+        </div>
+        {telemetrySaveState.message ? (
+          <p className="mt-3 text-sm text-emerald-700">{telemetrySaveState.message}</p>
+        ) : null}
+        {telemetrySaveState.error ? (
+          <p className="mt-3 text-sm text-red-700">{telemetrySaveState.error}</p>
+        ) : null}
+        {telemetrySource?.last_error ? (
+          <p className="mt-3 text-sm text-amber-700">Last scrape error: {telemetrySource.last_error}</p>
+        ) : null}
+      </section>
 
       {loadError && (
         <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -279,11 +497,11 @@ export default function ObservabilityPage() {
       )}
 
       {/* Alerts table */}
-      {alerts.length > 0 && (
+      {alertItems.length > 0 && (
         <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
           <div className="border-b border-gray-100 px-5 py-3">
             <h2 className="text-sm font-semibold text-gray-700">
-              Alerts ({alerts.length})
+              Alerts ({alertItems.length})
             </h2>
           </div>
           <table className="w-full text-sm">
@@ -310,10 +528,10 @@ export default function ObservabilityPage() {
                   <td className="px-4 py-3 font-mono text-xs">{alert.rule}</td>
                   <td className="px-4 py-3 text-gray-600">{alert.metric}</td>
                   <td className="px-4 py-3 font-semibold">
-                    {alert.value.toFixed(2)}
+                    {formatAlertNumber(alert.value)}
                   </td>
                   <td className="px-4 py-3 text-gray-400">
-                    {alert.threshold.toFixed(2)}
+                    {formatAlertNumber(alert.threshold)}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -334,7 +552,7 @@ export default function ObservabilityPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-400">
-                    {new Date(alert.fired_at).toLocaleTimeString()}
+                    {formatAlertTime(alert.fired_at)}
                   </td>
                   <td className="px-4 py-3">
                     {alert.status === "open" ? (

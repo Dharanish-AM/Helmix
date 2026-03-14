@@ -34,6 +34,8 @@ func TestBlueGreenHappyPath(t *testing.T) {
 		RepoID:      previous.RepoID,
 		CommitSHA:   "sha-new",
 		Branch:      "main",
+		AcceptRisk:  true,
+		ScanResults: map[string]any{"critical": 1},
 		Environment: "production",
 		ImageTag:    "ghcr.io/acme/app:new",
 	})
@@ -89,6 +91,8 @@ func TestBlueGreenTimeoutTriggersRollback(t *testing.T) {
 		RepoID:      "repo-1",
 		CommitSHA:   "sha-timeout",
 		Branch:      "main",
+		AcceptRisk:  true,
+		ScanResults: map[string]any{"high": 1},
 		Environment: "production",
 		ImageTag:    "ghcr.io/acme/app:timeout",
 	})
@@ -171,6 +175,7 @@ func TestDeploymentStatusAllTransitionsInDB(t *testing.T) {
 		RepoID:      "repo-1",
 		CommitSHA:   "sha-1",
 		Branch:      "main",
+		AcceptRisk:  false,
 		Environment: "production",
 		ImageTag:    "ghcr.io/acme/app:1",
 	})
@@ -198,6 +203,57 @@ func TestDeploymentStatusAllTransitionsInDB(t *testing.T) {
 	})
 }
 
+func TestStartDeploymentBlocksRiskyImageWithoutAcceptRisk(t *testing.T) {
+	service := NewService(testLogger(), newFakeStore(), &fakePublisher{}, 200*time.Millisecond, 25*time.Millisecond)
+
+	_, err := service.StartDeployment(context.Background(), "org-1", StartRequest{
+		RepoID:      "repo-1",
+		CommitSHA:   "sha-risky",
+		Branch:      "main",
+		Environment: "production",
+		ImageTag:    "ghcr.io/acme/app:risky",
+		ScanResults: map[string]any{"critical": 1, "high": 3},
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	}
+}
+
+func TestStartDeploymentAllowsRiskOverrideAndPersistsFlags(t *testing.T) {
+	fakeStore := newFakeStore()
+	service := NewService(testLogger(), fakeStore, &fakePublisher{}, 200*time.Millisecond, 25*time.Millisecond)
+
+	response, err := service.StartDeployment(context.Background(), "org-1", StartRequest{
+		RepoID:      "repo-1",
+		CommitSHA:   "sha-risk-accepted",
+		Branch:      "main",
+		Environment: "production",
+		ImageTag:    "ghcr.io/acme/app:risk-accepted",
+		ScanResults: map[string]any{"critical": 1, "high": 2},
+		AcceptRisk:  true,
+	})
+	if err != nil {
+		t.Fatalf("start deployment failed: %v", err)
+	}
+	if !response.AcceptRisk {
+		t.Fatal("expected accept_risk=true in response")
+	}
+	if response.ScanResults["critical"] != 1 {
+		t.Fatalf("unexpected response scan_results: %+v", response.ScanResults)
+	}
+
+	storedDeployment, err := fakeStore.GetDeployment(context.Background(), response.ID)
+	if err != nil {
+		t.Fatalf("get deployment failed: %v", err)
+	}
+	if !storedDeployment.AcceptRisk {
+		t.Fatal("expected accept_risk=true in persisted deployment")
+	}
+	if storedDeployment.ScanResults["critical"] != 1 {
+		t.Fatalf("unexpected persisted scan_results: %+v", storedDeployment.ScanResults)
+	}
+}
+
 type fakeStore struct {
 	mu          sync.Mutex
 	deployments map[string]store.Deployment
@@ -222,6 +278,8 @@ func (s *fakeStore) CreateDeployment(_ context.Context, params store.CreateDeplo
 		RepoID:      params.RepoID,
 		CommitSHA:   params.CommitSHA,
 		Branch:      params.Branch,
+		ScanResults: params.ScanResults,
+		AcceptRisk:  params.AcceptRisk,
 		Status:      params.Status,
 		Environment: params.Environment,
 		ImageTag:    params.ImageTag,

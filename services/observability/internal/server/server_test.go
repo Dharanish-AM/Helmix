@@ -58,6 +58,8 @@ type fakeService struct {
 	currentErr     error
 	alertsResp     []store.Alert
 	alertsErr      error
+	telemetryResp  store.TelemetrySource
+	telemetryErr   error
 }
 
 func (f *fakeService) IngestSnapshot(_ context.Context, _ observability.SnapshotRequest) (observability.SnapshotResponse, error) {
@@ -80,4 +82,64 @@ func (f *fakeService) CurrentSnapshot(_ context.Context, _ string) (store.Metric
 
 func (f *fakeService) OpenAlerts(_ context.Context, _ string) ([]store.Alert, error) {
 	return f.alertsResp, f.alertsErr
+}
+
+func (f *fakeService) GetTelemetrySource(_ context.Context, _ string) (store.TelemetrySource, error) {
+	return f.telemetryResp, f.telemetryErr
+}
+
+func (f *fakeService) UpsertTelemetrySource(_ context.Context, params store.UpsertTelemetrySourceParams) (store.TelemetrySource, error) {
+	if f.telemetryErr != nil {
+		return store.TelemetrySource{}, f.telemetryErr
+	}
+	return store.TelemetrySource{
+		ProjectID:             params.ProjectID,
+		SourceType:            params.SourceType,
+		MetricsURL:            params.MetricsURL,
+		ScrapeIntervalSeconds: params.ScrapeIntervalSeconds,
+		Enabled:               params.Enabled,
+		CreatedAt:             time.Now().UTC(),
+		UpdatedAt:             time.Now().UTC(),
+	}, nil
+}
+
+func (f *fakeService) ScrapeTelemetrySource(_ context.Context, _ string) (observability.SnapshotResponse, error) {
+	return f.ingestResponse, f.ingestErr
+}
+
+func TestGetTelemetrySourceReturnsOK(t *testing.T) {
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeService{
+		telemetryResp: store.TelemetrySource{
+			ProjectID:             "project-1",
+			SourceType:            "helmix-json",
+			MetricsURL:            "https://example.com/metrics",
+			ScrapeIntervalSeconds: 30,
+			Enabled:               true,
+			CreatedAt:             time.Now().UTC(),
+			UpdatedAt:             time.Now().UTC(),
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sources/project-1", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+}
+
+func TestUpsertTelemetrySourceReturnsOK(t *testing.T) {
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeService{})
+	body, _ := json.Marshal(map[string]any{
+		"source_type":             "prometheus",
+		"metrics_url":             "https://example.com/metrics",
+		"scrape_interval_seconds": 30,
+		"enabled":                 true,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/sources/project-1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
 }

@@ -50,13 +50,13 @@ Priority values:
 | 1 | GitHub Integration and Foundation Services | Weeks 1-3 | Done | 100% | Auth service, shared JWT middleware, API gateway, repo-analyzer, dashboard auth flow, integration tests, and Phase 1 e2e validation completed |
 | 2 | Infra Generator, Pipelines and Deployment | Weeks 4-6 | Done | 100% | Infra-generator, pipeline-generator, and deployment-engine are implemented, gateway-integrated, compose-smoke verified, and the full analyze->infra->pipeline->deploy->rollback flow passes |
 | 3 | Observability and AI Incident Engine | Weeks 7-10 | Done | 100% | All 11 Phase 3 acceptance criteria verified Pass locally and on CI; phase1-e2e-smoke and phase3-incident-e2e-smoke both passed on GitHub Actions run #5 (3m 46s, Success) |
-| 4 | Production Hardening | Weeks 11-12 | Done | 100% | All Phase 4 tracks complete, including production readiness checklist validation |
+| 4 | Production Hardening | Weeks 11-12 | In Progress | 82% | Core Phase 4 tracks are implemented, but guide-alignment gaps remain: audit_logs persistence, deploy-time image scan persistence/override, K8s security artifacts, platform deploy automation, and missing product/test surfaces |
 
 ## Active Sprint Focus
 
-Current sprint goal: Phase 4 Production Hardening completed.
+Current sprint goal: Close the verified guide-alignment gaps required for an honest 100% completion claim.
 
-Sprint status note: Phase 4.1 through 4.5 are done and production readiness checklist passed.
+Sprint status note: Validation shows the repo is broadly working, but still missing several guide-defined deliverables across Sections 10-16. Work has resumed on the highest-priority missing slices starting with auth audit logging.
 
 | Task ID | Task | Priority | Owner | Status | Due Date | Updated |
 |---|---|---|---|---|---|---|
@@ -66,6 +66,33 @@ Sprint status note: Phase 4.1 through 4.5 are done and production readiness chec
 | P4-04 | Create Terraform modules (VPC, K8s, DB, cache, registry) for AWS/GCP/Azure | P1 | Team | Done | 2026-03-15 | 2026-03-14 |
 | P4-05 | Security hardening: headers middleware, input validation, Trivy scanning, rate limiting | P0 | Team | Done | 2026-03-15 | 2026-03-14 |
 | P4-06 | Full CLI (Cobra + Viper): all commands + make cli-build for 3 platforms | P1 | Team | Done | 2026-03-16 | 2026-03-14 |
+| GAP-01 | Add audit_logs migration and auth-service event persistence for login/logout/auth failures | P0 | Team | In Progress | 2026-03-15 | 2026-03-14 |
+| GAP-02 | Add deployment scan_results persistence and accept_risk override path in deployment-engine/api-gateway | P0 | Team | Done | 2026-03-16 | 2026-03-14 |
+| GAP-03 | Add notification-service and wire event consumers into compose/CI | P1 | Team | Not Started | 2026-03-17 | 2026-03-14 |
+| GAP-04 | Add infra/kubernetes and infra/helm-charts/helmix deployment artifacts including security resources | P1 | Team | Not Started | 2026-03-18 | 2026-03-14 |
+| GAP-05 | Add missing dashboard surfaces: logs, deployments, pipelines, cost, settings, plus live WS/SSE flows | P1 | Team | Not Started | 2026-03-19 | 2026-03-14 |
+| GAP-06 | Add Playwright E2E, k6 load tests, and incident-ai eval harness | P1 | Team | Not Started | 2026-03-20 | 2026-03-14 |
+| GAP-07 | Add platform-deploy workflow and CI gates for mypy, Semgrep, Checkov, staging smoke, and prod gate | P1 | Team | Not Started | 2026-03-21 | 2026-03-14 |
+
+## Verified Guide-Alignment Gap Backlog
+
+These items were verified against Helmix_Full_Implementation_Guide.md and the current repo contents on 2026-03-14.
+
+| Gap ID | Guide Section | Missing Deliverable | Status | Notes |
+|---|---|---|---|---|
+| VG-01 | Section 11 Phase 4.4 | `audit_logs` table and auth event persistence | In Progress | Migration, auth-service persistence, route-level audit tests, and org/secret handler audit coverage are in place; remaining work is taxonomy cleanup and closeout decision |
+| VG-02 | Section 11 Phase 4.4 | `deployments.scan_results` persistence and `accept_risk` override | Done | Migration `000011` applied; deployment-engine persists scan metadata and enforces risk override; gateway forwarding and e2e rejection/override paths verified |
+| VG-03 | Sections 2 and 10 | `notification-service` implementation | Not Started | Referenced in architecture/event flow but absent from repo |
+| VG-04 | Sections 2 and 16 | `infra/kubernetes` platform manifests | Not Started | Guide layout includes manifests, repo does not |
+| VG-05 | Sections 2 and 16 | `infra/helm-charts/helmix` self-deployment chart | Not Started | Guide layout includes chart, repo does not |
+| VG-06 | Section 11 Phase 4.4 | K8s NetworkPolicies, ServiceAccounts/RBAC, ResourceQuotas, restricted PSA artifacts | Not Started | Security hardening claims exceed current repo artifacts |
+| VG-07 | Section 12 Dashboard | Missing dashboard routes: logs, deployments, pipelines, cost, settings | Not Started | Current app exposes only dashboard root, incidents, observability, login |
+| VG-08 | Section 12 Dashboard | Live deployment WebSocket UI and SSE log streaming | Not Started | Gateway has `/ws` proxy, but no frontend implementation or log page |
+| VG-09 | Section 13 Testing Strategy | Playwright E2E suite | Not Started | Repo uses Go e2e only at present |
+| VG-10 | Section 13 Testing Strategy | k6 load test scripts | Not Started | `tests/load` is effectively empty |
+| VG-11 | Section 13.1 | incident-ai eval harness and golden cases | Not Started | `tests/eval` absent |
+| VG-12 | Section 16.3 | `.github/workflows/platform-deploy.yml` and release stages | Not Started | Only `ci.yml` exists |
+| VG-13 | Sections 13 and 16.3 | CI gates for mypy, Semgrep, Checkov, staging smoke, and prod approval path | Not Started | Current CI does not enforce these stages |
 
 ## Phase Checklists
 
@@ -222,6 +249,12 @@ Use one line per update.
 | 2026-03-14 | Completed Phase 4 production readiness closure: fixed Vault AppRole bootstrap idempotency in `scripts/bootstrap-vault-approle.sh` for repeated compose runs, then validated all readiness gates with `make security-scan-trivy`, `make test-e2e-phase1`, `make test-e2e-phase2-flow`, `make test-e2e-phase3-observability`, `make test-e2e-phase3-incident`, `make test-e2e-phase4-vault`, `make cli-build`, and `make tf-plan env=production` |
 | 2026-03-14 | Improved root test reliability: fixed `make test` to run Go tests module-by-module (go.work-compatible) and run incident-ai tests in Docker (`python:3.12-slim`) to avoid host `pytest` dependency drift; validated with successful `make test` run (all selected Go modules pass; incident-ai `18 passed`) |
 | 2026-03-14 | Improved lint reliability and closed remaining static-analysis findings: rewired `make lint` to containerized `golangci-lint`/`ruff`/frontend `next lint`, fixed transaction rollback `errcheck` issues in auth-service/repo-analyzer stores, removed no-op self-assignment in repo-analyzer classifier, cleaned unused incident-ai imports, and validated with green `make lint`, green `make security-scan-trivy`, and post-fix `make test` pass |
+| 2026-03-14 | Re-baselined tracker against guide-reality gaps: marked Phase 4 back to In Progress, added verified guide-alignment backlog (VG-01..VG-13), and switched active sprint focus to completion-gap closure |
+| 2026-03-14 | Started GAP-01 audit logging: added migration `000010_create_audit_logs`, implemented `CreateAuditLog` in auth-service store, wired login/refresh/logout audit events in auth-service handlers, and validated with `cd services/auth-service && go test ./...`; recovered local migration state by forcing version 10 then re-running `make migrate` to green (`no change`) |
+| 2026-03-14 | Continued GAP-01 audit logging: refactored auth-service server dependencies behind interfaces, added route-level audit tests for refresh/logout persistence, and expanded audit events for GitHub repo listing and repo-analysis success/failure paths; revalidated with `cd services/auth-service && go test ./...` |
+| 2026-03-14 | Expanded GAP-01 audit coverage across org-management and secrets handlers, added route-level tests for org creation success and secret read failure, and revalidated with `cd services/auth-service && go test ./...` |
+| 2026-03-14 | Started GAP-02 deploy risk controls: added migration `000011_add_deployment_scan_fields`, threaded `scan_results` and `accept_risk` through deployment-engine request/store/response models, enforced `accept_risk` when high/critical findings are present, and validated with `cd services/deployment-engine && go test ./...` plus gateway forwarding coverage via `cd services/api-gateway && go test ./internal/gateway -run TestDeploymentStartProxyAuthorized` |
+| 2026-03-14 | Completed GAP-02 verification: added Phase 2 e2e risk override test (`TestPhase2GatewayDeploymentRiskOverride`), force-recreated deployment-engine and api-gateway containers, validated rejection without `accept_risk` and acceptance with override, and applied migration `000011` via `make migrate` (`11/u add_deployment_scan_fields`) |
 
 ### Phase 3 Acceptance
 
@@ -297,9 +330,7 @@ Use this section as the verification sheet for early Phase 2 increments. Replace
 
 ## Next Actions
 
-1. ~~Re-run GitHub Actions after the Qdrant dependency and CI warning fixes, then verify `phase1-e2e-smoke` and `phase3-incident-e2e-smoke` both pass.~~ **Done** — CI run #5 passed (Success, 3m 46s).
-2. ~~Begin Phase 4: multi-tenancy RBAC, Vault secret management, Terraform modules, security hardening, full CLI command set.~~ **In Progress** — Phase 4.1 org/RBAC done.
-3. Phase 4.2: Vault integration — AppRole per service, `GET/POST/DELETE /secrets/{project_id}` on gateway, infra-generator ExternalSecret CRD templates.
-4. Phase 4.3: Terraform modules — VPC, Kubernetes (EKS/GKE/AKS), DB, cache, registry; `make tf-plan/tf-apply/tf-destroy`.
-5. Phase 4.4: Security hardening — security headers + input-validation middleware on gateway, Trivy image scanning, K8s NetworkPolicies, auth rate limiting + audit log table.
-6. Phase 4.5: Full CLI — Cobra + Viper `helmix` binary with all guide commands; `make cli-build` for 3 platforms.
+1. Close GAP-01 by deciding whether the current mixed `auth.*`, `org.*`, and `secret.*` events should be normalized into a single audit taxonomy or intentionally remain service-scoped, then document that choice in the tracker and guide.
+2. Start GAP-03 by scaffolding `services/notification-service` and wiring its initial event subscriptions into compose and CI.
+3. Add missing deployment artifacts under `infra/kubernetes` and `infra/helm-charts/helmix`, including the first security resources (NetworkPolicies, ServiceAccounts/RBAC, ResourceQuotas).
+4. Expand the dashboard and test/release surfaces to match the guide: missing routes, WS/SSE flows, Playwright, k6, eval harness, and platform-deploy workflow.

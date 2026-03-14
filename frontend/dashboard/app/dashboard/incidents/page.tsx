@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
+  fetchConnectedRepos,
   fetchIncidentDetail,
   fetchIncidents,
   fetchProjectDeployments,
   fetchSimilarIncidents,
   triggerIncidentAction,
+  type ConnectedRepo,
   type DeploymentSummary,
   type Incident,
   type SimilarIncident,
@@ -47,6 +49,7 @@ export default function IncidentsPage() {
   const router = useRouter();
   const { token } = useAuthStore();
   const [projectId, setProjectId] = useState("");
+  const [projects, setProjects] = useState<ConnectedRepo[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
   const [deploymentIdByIncident, setDeploymentIdByIncident] = useState<
@@ -93,6 +96,30 @@ export default function IncidentsPage() {
       router.replace("/login");
     }
   }, [token, router]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+
+    let isCancelled = false;
+    fetchConnectedRepos(token)
+      .then((items) => {
+        if (!isCancelled) {
+          setProjects(items);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : "unknown error";
+        if (message === "unauthorized") {
+          router.replace("/login");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [router, token]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -351,11 +378,29 @@ export default function IncidentsPage() {
       ) : null}
 
       <div className="mb-3 flex flex-wrap gap-3">
+        <select
+          value={projectId}
+          onChange={(event) => {
+            setProjectId(event.target.value);
+            setCurrentPage(1);
+          }}
+          className="w-80 rounded-xl border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        >
+          <option value="">Select connected project</option>
+          {projects.map((project) => (
+            <option key={project.project_id} value={project.project_id}>
+              {project.project_name} ({project.github_repo})
+            </option>
+          ))}
+        </select>
         <input
           type="text"
           placeholder="Project ID"
           value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
+          onChange={(e) => {
+            setProjectId(e.target.value);
+            setCurrentPage(1);
+          }}
           onKeyDown={(e) => e.key === "Enter" && handleFetch()}
           className="w-72 rounded-xl border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
         />
@@ -374,6 +419,12 @@ export default function IncidentsPage() {
           Refresh
         </button>
       </div>
+
+      {projectId && projects.some((project) => project.project_id === projectId) ? (
+        <p className="mb-4 text-xs text-gray-500">
+          Viewing {projects.find((project) => project.project_id === projectId)?.project_name}.
+        </p>
+      ) : null}
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm text-gray-600">

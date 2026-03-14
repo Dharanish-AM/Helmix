@@ -20,29 +20,33 @@ var (
 
 // StartRequest defines the deploy API input.
 type StartRequest struct {
-	RepoID            string `json:"repo_id"`
-	CommitSHA         string `json:"commit_sha"`
-	Branch            string `json:"branch"`
-	Environment       string `json:"environment"`
-	ImageTag          string `json:"image_tag"`
-	ReadyAfterSeconds int    `json:"ready_after_seconds,omitempty"`
-	SimulateFailure   bool   `json:"simulate_failure,omitempty"`
+	RepoID            string         `json:"repo_id"`
+	CommitSHA         string         `json:"commit_sha"`
+	Branch            string         `json:"branch"`
+	ScanResults       map[string]any `json:"scan_results,omitempty"`
+	AcceptRisk        bool           `json:"accept_risk,omitempty"`
+	Environment       string         `json:"environment"`
+	ImageTag          string         `json:"image_tag"`
+	ReadyAfterSeconds int            `json:"ready_after_seconds,omitempty"`
+	SimulateFailure   bool           `json:"simulate_failure,omitempty"`
 }
 
 // DeploymentResponse is the API contract returned by deployment endpoints.
 type DeploymentResponse struct {
-	ID                    string     `json:"id"`
-	RepoID                string     `json:"repo_id"`
-	CommitSHA             string     `json:"commit_sha"`
-	Branch                string     `json:"branch"`
-	Status                string     `json:"status"`
-	Environment           string     `json:"environment"`
-	ImageTag              string     `json:"image_tag,omitempty"`
-	DeployedAt            *time.Time `json:"deployed_at,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
-	Active                bool       `json:"active"`
-	CurrentLiveDeployment string     `json:"current_live_deployment_id,omitempty"`
-	PreviousDeploymentID  string     `json:"previous_deployment_id,omitempty"`
+	ID                    string         `json:"id"`
+	RepoID                string         `json:"repo_id"`
+	CommitSHA             string         `json:"commit_sha"`
+	Branch                string         `json:"branch"`
+	ScanResults           map[string]any `json:"scan_results,omitempty"`
+	AcceptRisk            bool           `json:"accept_risk"`
+	Status                string         `json:"status"`
+	Environment           string         `json:"environment"`
+	ImageTag              string         `json:"image_tag,omitempty"`
+	DeployedAt            *time.Time     `json:"deployed_at,omitempty"`
+	CreatedAt             time.Time      `json:"created_at"`
+	Active                bool           `json:"active"`
+	CurrentLiveDeployment string         `json:"current_live_deployment_id,omitempty"`
+	PreviousDeploymentID  string         `json:"previous_deployment_id,omitempty"`
 }
 
 // Store captures the persistence operations required by the deployment service.
@@ -100,6 +104,8 @@ func (s *Service) StartDeployment(ctx context.Context, orgID string, request Sta
 		RepoID:      strings.TrimSpace(request.RepoID),
 		CommitSHA:   strings.TrimSpace(request.CommitSHA),
 		Branch:      strings.TrimSpace(request.Branch),
+		ScanResults: request.ScanResults,
+		AcceptRisk:  request.AcceptRisk,
 		Environment: strings.TrimSpace(request.Environment),
 		ImageTag:    strings.TrimSpace(request.ImageTag),
 		Status:      "deploying",
@@ -200,6 +206,8 @@ func (s *Service) buildResponse(ctx context.Context, deployment store.Deployment
 		RepoID:      deployment.RepoID,
 		CommitSHA:   deployment.CommitSHA,
 		Branch:      deployment.Branch,
+		ScanResults: deployment.ScanResults,
+		AcceptRisk:  deployment.AcceptRisk,
 		Status:      deployment.Status,
 		Environment: deployment.Environment,
 		ImageTag:    deployment.ImageTag,
@@ -307,10 +315,42 @@ func validateStartRequest(request StartRequest) error {
 	if strings.TrimSpace(request.Environment) == "" {
 		return fmt.Errorf("%w: environment is required", ErrInvalidRequest)
 	}
+	if hasBlockingFindings(request.ScanResults) && !request.AcceptRisk {
+		return fmt.Errorf("%w: accept_risk is required when scan_results include high or critical findings", ErrInvalidRequest)
+	}
 	if request.ReadyAfterSeconds < 0 {
 		return fmt.Errorf("%w: ready_after_seconds must be zero or positive", ErrInvalidRequest)
 	}
 	return nil
+}
+
+func hasBlockingFindings(scanResults map[string]any) bool {
+	if len(scanResults) == 0 {
+		return false
+	}
+	return readNonNegativeInt(scanResults["critical"]) > 0 || readNonNegativeInt(scanResults["high"]) > 0
+}
+
+func readNonNegativeInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	case int32:
+		if typed > 0 {
+			return int(typed)
+		}
+	case int64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	}
+	return 0
 }
 
 type noopPublisher struct{}

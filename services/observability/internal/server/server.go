@@ -20,6 +20,16 @@ type Service interface {
 	ListSnapshots(ctx context.Context, projectID string) ([]store.MetricSnapshot, error)
 	CurrentSnapshot(ctx context.Context, projectID string) (store.MetricSnapshot, error)
 	OpenAlerts(ctx context.Context, projectID string) ([]store.Alert, error)
+	GetTelemetrySource(ctx context.Context, projectID string) (store.TelemetrySource, error)
+	UpsertTelemetrySource(ctx context.Context, params store.UpsertTelemetrySourceParams) (store.TelemetrySource, error)
+	ScrapeTelemetrySource(ctx context.Context, projectID string) (observability.SnapshotResponse, error)
+}
+
+type telemetrySourceRequest struct {
+	SourceType            string `json:"source_type"`
+	MetricsURL            string `json:"metrics_url"`
+	ScrapeIntervalSeconds int    `json:"scrape_interval_seconds"`
+	Enabled               bool   `json:"enabled"`
 }
 
 type Server struct {
@@ -46,6 +56,9 @@ func (s *Server) buildRouter() chi.Router {
 	router.Get("/metrics/{project_id}", s.handleListSnapshots)
 	router.Get("/metrics/{project_id}/current", s.handleCurrentSnapshot)
 	router.Get("/alerts/{project_id}", s.handleOpenAlerts)
+	router.Get("/sources/{project_id}", s.handleGetTelemetrySource)
+	router.Put("/sources/{project_id}", s.handleUpsertTelemetrySource)
+	router.Post("/sources/{project_id}/scrape", s.handleScrapeTelemetrySource)
 	return router
 }
 
@@ -97,6 +110,45 @@ func (s *Server) handleOpenAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleGetTelemetrySource(w http.ResponseWriter, r *http.Request) {
+	response, err := s.service.GetTelemetrySource(r.Context(), chi.URLParam(r, "project_id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleUpsertTelemetrySource(w http.ResponseWriter, r *http.Request) {
+	var request telemetrySourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("decode request: %w", err))
+		return
+	}
+
+	response, err := s.service.UpsertTelemetrySource(r.Context(), store.UpsertTelemetrySourceParams{
+		ProjectID:             chi.URLParam(r, "project_id"),
+		SourceType:            request.SourceType,
+		MetricsURL:            request.MetricsURL,
+		ScrapeIntervalSeconds: request.ScrapeIntervalSeconds,
+		Enabled:               request.Enabled,
+	})
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleScrapeTelemetrySource(w http.ResponseWriter, r *http.Request) {
+	response, err := s.service.ScrapeTelemetrySource(r.Context(), chi.URLParam(r, "project_id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, response)
 }
 
 func (s *Server) writeServiceError(w http.ResponseWriter, err error) {

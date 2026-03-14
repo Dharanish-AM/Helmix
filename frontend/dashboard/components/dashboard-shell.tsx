@@ -16,6 +16,8 @@ import { type AuthUser, useAuthStore } from "@/lib/auth-store";
 
 type RepoCard = {
   id: string;
+  projectId: string;
+  projectName: string;
   name: string;
   stack: string;
   status: string;
@@ -220,6 +222,11 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
   const canConnectRepo = repoQuery.trim().includes("/");
   const connectedRepoNames = new Set(repos.map((repo) => repo.name.toLowerCase()));
 
+  function openProjectPage(path: string, projectId: string) {
+    const params = new URLSearchParams({ project_id: projectId });
+    router.push(`${path}?${params.toString()}`);
+  }
+
   async function handleConnectRepository(fullName?: string, defaultBranch?: string) {
     const targetRepo = (fullName ?? repoQuery).trim();
     if (!activeToken || !targetRepo.includes("/") || isConnectingRepo) {
@@ -329,11 +336,31 @@ export function DashboardShell({ tokenFromQuery = null }: DashboardShellProps) {
               {repos.map((repo) => (
                 <div key={repo.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="font-semibold text-slate-900">{repo.name}</p>
+                    <div>
+                      <p className="font-semibold text-slate-900">{repo.projectName}</p>
+                      <p className="text-xs text-slate-500">{repo.name}</p>
+                    </div>
                     <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">{repo.status}</span>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">Stack: {repo.stack}</p>
+                  <p className="mt-1 font-mono text-[11px] text-slate-500">Project ID: {repo.projectId}</p>
                   <p className="mt-1 text-xs text-slate-500">Connected {repo.lastDeploy}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                      onClick={() => openProjectPage("/dashboard/observability", repo.projectId)}
+                      type="button"
+                    >
+                      Observability
+                    </button>
+                    <button
+                      className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                      onClick={() => openProjectPage("/dashboard/incidents", repo.projectId)}
+                      type="button"
+                    >
+                      Incidents + Deployments
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -462,6 +489,8 @@ function toRepoCard(repo: ConnectedRepo): RepoCard {
 
   return {
     id: repo.repo_id,
+    projectId: repo.project_id,
+    projectName: repo.project_name || repo.github_repo,
     name: repo.github_repo,
     stack: stack || (analysisComplete ? "analyzed (stack unknown)" : "pending analysis"),
     status: analysisComplete ? "analyzed" : "linked",

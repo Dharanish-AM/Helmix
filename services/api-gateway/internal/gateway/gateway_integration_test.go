@@ -356,6 +356,12 @@ func TestDeploymentStartProxyAuthorized(t *testing.T) {
 		if !strings.Contains(string(requestBody), `"repo_id":"repo-1"`) {
 			t.Fatalf("unexpected upstream body: %s", string(requestBody))
 		}
+		if !strings.Contains(string(requestBody), `"accept_risk":true`) {
+			t.Fatalf("expected accept_risk forwarding, body: %s", string(requestBody))
+		}
+		if !strings.Contains(string(requestBody), `"scan_results":{"critical":1,"high":0}`) {
+			t.Fatalf("expected scan_results forwarding, body: %s", string(requestBody))
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
@@ -365,7 +371,7 @@ func TestDeploymentStartProxyAuthorized(t *testing.T) {
 	gateway := newTestGatewayWithUpstream(t, upstream)
 	token := signTestJWT(t, gateway.config.JWTPublicKeyPath, "phase2-deploy-user")
 
-	body := strings.NewReader(`{"repo_id":"repo-1","commit_sha":"sha-123","branch":"main","environment":"production","image_tag":"ghcr.io/acme/app:sha-123"}`)
+	body := strings.NewReader(`{"repo_id":"repo-1","commit_sha":"sha-123","branch":"main","scan_results":{"critical":1,"high":0},"accept_risk":true,"environment":"production","image_tag":"ghcr.io/acme/app:sha-123"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/deployments/deploy", body)
 	request.Header.Set("Content-Type", "application/json")

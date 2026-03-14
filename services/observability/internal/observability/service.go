@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -56,13 +57,19 @@ type SnapshotResponse struct {
 
 // Service exposes the observability use cases.
 type Service struct {
-	logger    *slog.Logger
-	store     *store.Store
-	publisher Publisher
+	logger     *slog.Logger
+	store      *store.Store
+	publisher  Publisher
+	httpClient *http.Client
 }
 
 func NewService(logger *slog.Logger, observabilityStore *store.Store, publisher Publisher) *Service {
-	return &Service{logger: logger, store: observabilityStore, publisher: publisher}
+	return &Service{
+		logger:     logger,
+		store:      observabilityStore,
+		publisher:  publisher,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 func (s *Service) IngestSnapshot(ctx context.Context, request SnapshotRequest) (SnapshotResponse, error) {
@@ -130,9 +137,14 @@ func (s *Service) IngestSnapshot(ctx context.Context, request SnapshotRequest) (
 
 		createdAlert, err := s.store.CreateAlert(ctx, store.CreateAlertParams{
 			ProjectID:   snapshot.ProjectID,
+			Rule:        candidate.Rule,
 			Severity:    candidate.Severity,
 			Title:       candidate.Title,
 			Description: candidate.Description,
+			Metric:      candidate.Metric,
+			Value:       candidate.Value,
+			Threshold:   candidate.Threshold,
+			FiredAt:     snapshot.CapturedAt,
 		})
 		if err != nil {
 			return SnapshotResponse{}, fmt.Errorf("create alert: %w", err)
